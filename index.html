@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LocalVision 7:3 Player (Single Layout)</title>
+  <style>
+    html, body { margin:0; padding:0; width:100%; height:100%; background:#000; overflow:hidden; }
+    .wrap { width:100vw; height:100vh; display:flex; }
+    .zone { position:relative; height:100vh; background:#000; overflow:hidden; }
+    .left { width:70vw; }
+    .right { width:30vw; border-left: 3px solid rgba(255,255,255,0.12); }
+
+    video, img {
+      width:100%; height:100%;
+      object-fit:cover;
+      position:absolute; inset:0;
+      background:#000;
+    }
+
+    .placeholder {
+      position:absolute; inset:0;
+      display:flex; align-items:center; justify-content:center;
+      color:rgba(255,255,255,0.85);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      font-size:18px;
+      background: radial-gradient(circle at 30% 30%, rgba(255,255,255,0.06), rgba(0,0,0,0.9));
+      z-index:5;
+      text-align:center;
+      padding:24px;
+    }
+
+    .badge {
+      position:absolute; top:10px; left:10px;
+      padding:6px 10px; border-radius:999px;
+      background:rgba(0,0,0,0.45);
+      color:rgba(255,255,255,0.75);
+      font-size:12px;
+      z-index:10;
+      user-select:none;
+    }
+
+    .overlay {
+      position:absolute; bottom:16px; right:16px;
+      background: rgba(0,0,0,0.55);
+      color:#fff;
+      padding:10px 14px;
+      border-radius:12px;
+      font-size:16px;
+      cursor:pointer;
+      z-index:10;
+      user-select:none;
+      display:none;
+    }
+
+    /* 진단 패널 */
+    .diag {
+      position:fixed; top:0; right:0;
+      width:min(420px, 90vw); height:100vh;
+      background:rgba(0,0,0,0.88);
+      border-left:1px solid rgba(255,255,255,0.15);
+      transform: translateX(100%);
+      transition: transform 180ms ease;
+      z-index:999;
+      color:#fff;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      padding:16px;
+      box-sizing:border-box;
+    }
+    .diag.open { transform: translateX(0); }
+    .diag h3 { margin:0 0 12px 0; font-size:16px; }
+    .row { display:flex; justify-content:space-between; gap:12px; padding:8px 0; border-bottom:1px solid rgba(255,255,255,0.08); }
+    .k { color:rgba(255,255,255,0.65); font-size:13px; }
+    .v { color:rgba(255,255,255,0.95); font-size:13px; text-align:right; word-break:break-all; }
+    .hint {
+      position:fixed; bottom:10px; left:10px;
+      color:rgba(255,255,255,0.35); font-size:12px;
+      z-index:998;
+    }
+
+    /* 숨김 클릭 영역(좌상단) */
+    
+    /* 전체화면 버튼(우상단) */
+    .fsbtn{
+      position:fixed; top:10px; right:10px;
+      width:44px; height:44px;
+      border-radius:14px;
+      background:rgba(0,0,0,0.45);
+      color:rgba(255,255,255,0.88);
+      border:1px solid rgba(255,255,255,0.14);
+      font-size:18px;
+      z-index:999;
+      cursor:pointer;
+      user-select:none;
+    }
+    .fsbtn:active{ transform: scale(0.98); }
+.hotspot {
+      position:fixed; top:0; left:0;
+      width:60px; height:60px;
+      z-index:998;
+      background:transparent;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <!-- LEFT -->
+    <section class="zone left">
+      <div class="badge">LEFT 70%</div>
+      <div class="placeholder" id="phLeft">로딩 중…</div>
+      <img id="imgLeft" alt="" style="display:none;" />
+      <video id="vidLeft" autoplay muted playsinline style="display:none;"></video>
+      <div class="overlay" id="olLeft">🔗 자세히 보기</div>
+    </section>
+
+    <!-- RIGHT -->
+    <section class="zone right">
+      <div class="badge">RIGHT 30%</div>
+      <div class="placeholder" id="phRight">로딩 중…</div>
+      <img id="imgRight" alt="" style="display:none;" />
+      <video id="vidRight" autoplay muted playsinline style="display:none;"></video>
+      <div class="overlay" id="olRight">🔗 자세히 보기</div>
+    </section>
+  </div>
+
+  <!-- 진단 패널 -->
+  <div class="hotspot" id="hotspot"></div>
+  <button class="fsbtn" id="fsBtn" aria-label="전체화면">⛶</button>
+  <script>
+    // fsBtnInline: app.js가 에러로 멈춰도 전체화면 버튼은 동작하게(보험)
+    (function(){
+      const btn = document.getElementById('fsBtn');
+      if(!btn) return;
+      const update = ()=>{ btn.textContent = document.fullscreenElement ? "⤢" : "⛶"; };
+      btn.addEventListener('click', async ()=>{
+        try{
+          if(!document.fullscreenElement) await document.documentElement.requestFullscreen();
+          else await document.exitFullscreen();
+        }catch(e){ console.warn(e); }
+        update();
+      });
+      document.addEventListener('fullscreenchange', update);
+      update();
+    })();
+  </script>
+
+  <div class="diag" id="diag">
+    <h3>진단 패널</h3>
+    <div class="row"><div class="k">온라인</div><div class="v" id="dOnline">-</div></div>
+    <div class="row"><div class="k">마지막 업데이트</div><div class="v" id="dUpdate">-</div></div>
+    <div class="row"><div class="k">LEFT 재생</div><div class="v" id="dLeft">-</div></div>
+    <div class="row"><div class="k">RIGHT 재생</div><div class="v" id="dRight">-</div></div>
+    <div class="row"><div class="k">캐시 상태</div><div class="v" id="dCache">-</div></div>
+    <div class="row"><div class="k">에러 횟수</div><div class="v" id="dErr">0</div></div>
+  </div>
+  <div class="hint">좌상단 5번 터치 → 진단 패널 · 우상단 ⛶ → 전체화면</div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
