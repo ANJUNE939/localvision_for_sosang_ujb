@@ -1,4 +1,4 @@
-LocalVision 7:3 Player (AUTO STORE v1.4.0)
+LocalVision 7:3 Player (AUTO STORE v1.4.3)
 
 ✅ 이번 버전 특징
 - config.json 없이, 접속 URL의 ?store= 값만으로 재생목록(playlist)을 자동으로 잡습니다.
@@ -45,3 +45,23 @@ LocalVision 7:3 Player (AUTO STORE v1.4.0)
 테스트 순서(오프라인 포함)
 1) 인터넷 ON → 실행 → 1~2회 반복 재생(캐시 쌓기)
 2) 인터넷 OFF → 새로고침(F5) → 저장된 콘텐츠면 계속 재생
+
+-----------------------------
+운영형(권장): 매일 새벽 자동 재시작/새로고침
+-----------------------------
+✅ 기본값: 매일 09:30 자동으로 한 번 재시작/새로고침
+
+URL 파라미터로 조절 가능:
+- restart=HH:MM
+  예) .../?store=sbflower&restart=09:30
+
+- restartMode=auto|reload|fully
+  - auto(기본): Fully Kiosk의 JavaScript Interface가 켜져 있으면 앱 재시작, 아니면 페이지 새로고침
+  - reload: 무조건 페이지 새로고침(location.reload)
+  - fully: Fully Kiosk 앱 재시작(가능할 때)
+
+- restartJitterSec=180 (기본 180초)
+  여러 TV가 동시에 새로고침해서 네트워크가 몰리는 걸 방지(0이면 동시에)
+
+- restartWindowMin=60 (기본 60분)
+  기기가 슬립이었다가 너무 늦게 깨어나면(예: 영업시간) 오늘은 스킵하고 다음날로 넘김

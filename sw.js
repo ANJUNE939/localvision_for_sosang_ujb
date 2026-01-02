@@ -1,4 +1,4 @@
-const STATIC_CACHE = "lv-static-v6";
+const STATIC_CACHE = "lv-static-v7";
 const MEDIA_CACHE  = "lv-media-v3"; // 기존 v1.2 캐시 재사용
 
 self.addEventListener("install", (event) => {

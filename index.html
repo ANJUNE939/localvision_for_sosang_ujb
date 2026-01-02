@@ -30,14 +30,35 @@
       padding:24px;
     }
 
+    /* 상단 뱃지: 기본 숨김 → 상단(56px)에 마우스 올리면 표시 */
+    .badgeWrap{
+      position:absolute; top:0; left:0; right:0;
+      height:56px;
+      z-index:12;
+      background:transparent;
+      cursor:default;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .badgeWrap:focus{ outline:none; }
     .badge {
       position:absolute; top:10px; left:10px;
       padding:6px 10px; border-radius:999px;
       background:rgba(0,0,0,0.45);
       color:rgba(255,255,255,0.75);
       font-size:12px;
-      z-index:10;
       user-select:none;
+
+      /* hidden by default */
+      opacity:0;
+      transform: translateY(-4px);
+      transition: opacity 140ms ease, transform 140ms ease;
+      pointer-events:none;
+    }
+    .badgeWrap:hover .badge,
+    .badgeWrap:active .badge,
+    .badgeWrap:focus .badge {
+      opacity:1;
+      transform: translateY(0);
     }
 
     .overlay {
@@ -106,7 +127,7 @@
   <div class="wrap">
     <!-- LEFT -->
     <section class="zone left">
-      <div class="badge">LEFT 70%</div>
+      <div class="badgeWrap" tabindex="0"><div class="badge">우리업체 70%</div></div>
       <div class="placeholder" id="phLeft">로딩 중…</div>
       <img id="imgLeft" alt="" style="display:none;" />
       <video id="vidLeft" autoplay muted playsinline style="display:none;"></video>
@@ -115,7 +136,7 @@
 
     <!-- RIGHT -->
     <section class="zone right">
-      <div class="badge">RIGHT 30%</div>
+      <div class="badgeWrap" tabindex="0"><div class="badge">지역소식 30%</div></div>
       <div class="placeholder" id="phRight">로딩 중…</div>
       <img id="imgRight" alt="" style="display:none;" />
       <video id="vidRight" autoplay muted playsinline style="display:none;"></video>

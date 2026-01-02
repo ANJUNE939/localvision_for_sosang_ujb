@@ -250,8 +250,18 @@ async function loadConfig() {
     imageDurationSecDefault: numParam(params, "imgdur", 10),
     loadTimeoutMs: numParam(params, "timeout", 30000),
 
-    dailyUpdateTime: params.get("update") || "23:30",
+    dailyUpdateTime: params.get("update") || "09:10",
     playlistRefreshFallbackMs: numParam(params, "refresh", 3600000),
+
+    // (운영용) 매일 새벽 자동 재시작/새로고침
+    // - restart=HH:MM (기본 09:30)
+    // - restartMode=auto|reload|fully (기본 auto)
+    // - restartJitterSec=0.. (기본 180초, 여러 TV 동시부하 방지)
+    // - restartWindowMin=... (기본 60분, 너무 늦게 깨면 오늘은 스킵)
+    dailyRestartTime: params.get("restart") || "09:30",
+    dailyRestartMode: params.get("restartMode") || "auto",
+    restartJitterSec: numParam(params, "restartJitterSec", 180),
+    restartWindowMin: numParam(params, "restartWindowMin", 60),
 
     enableOfflineCache: boolParam(params, "offline", true),
     cacheStrategy: params.get("cache") || "prefetch-next"
@@ -496,6 +506,93 @@ function scheduleDailyUpdate() {
   }, delay);
 }
 
+function msUntilNextTime(hhmm) {
+  const parts = String(hhmm || "").split(":");
+  if (parts.length < 2) return null;
+  const hh = Number(parts[0]);
+  const mm = Number(parts[1]);
+  if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
+
+  const now = new Date();
+  const next = new Date(now);
+  next.setHours(hh, mm, 0, 0);
+  if (next <= now) next.setDate(next.getDate() + 1);
+  return next.getTime() - now.getTime();
+}
+
+async function triggerRestartNow(reason = "manual") {
+  // 최신 파일(sw/app.js 등) 받게끔, 재시작 전에 SW 업데이트를 한 번 시도
+  try {
+    if ("serviceWorker" in navigator) {
+      const reg = await navigator.serviceWorker.getRegistration();
+      if (reg) await reg.update();
+    }
+  } catch {}
+
+  // 브라우저만 쓰는 운영환경에서 "리로드해도 옛날 파일이 계속 뜨는" 문제를 줄이기 위해
+  // (SW cache-first 때문에) 온라인일 때 정적 캐시를 한 번 비운 뒤 리로드합니다.
+  try {
+    if (navigator.onLine && ("caches" in window)) {
+      const keys = await caches.keys();
+      await Promise.all(
+        keys
+          .filter(k => k.startsWith("lv-static"))
+          .map(k => caches.delete(k))
+      );
+    }
+  } catch {}
+
+  const mode = (CONFIG.dailyRestartMode || "auto").toLowerCase();
+  const hasFully = (typeof window.fully !== "undefined") && (typeof window.fully.restartApp === "function");
+
+  // Fully Kiosk(PLUS)에서 JavaScript Interface가 켜져 있으면 앱 자체 재시작 가능
+  // docs: fully.restartApp() 제공
+  if (mode === "fully" || (mode === "auto" && hasFully)) {
+    try {
+      window.fully.restartApp();
+      return;
+    } catch {}
+  }
+
+  // 일반 브라우저/웹뷰: 페이지 리로드(=소프트 재시작)
+  try {
+    localStorage.setItem("lv_last_restart", `${nowStr()} (${reason})`);
+  } catch {}
+  location.reload();
+}
+
+function scheduleDailyRestart() {
+  const t = CONFIG.dailyRestartTime;
+  if (!t) return;
+
+  const baseDelay = msUntilNextTime(t);
+  if (baseDelay == null) {
+    console.warn("Invalid dailyRestartTime:", t);
+    return;
+  }
+
+  const jitterMs = Math.max(0, Number(CONFIG.restartJitterSec || 0)) * 1000;
+  const add = jitterMs ? Math.floor(Math.random() * jitterMs) : 0;
+  const plannedAt = Date.now() + baseDelay + add;
+
+  console.log("Next restart scheduled at:", new Date(plannedAt).toString(), `(target ${t}, +${Math.round(add/1000)}s)`);
+
+  setTimeout(async () => {
+    // 기기가 슬립 상태였다가 한참 뒤에 깨어나면, 영업시간에 갑자기 리로드될 수 있음 → 윈도우 밖이면 스킵
+    const lateMs = Date.now() - plannedAt;
+    const windowMs = Math.max(0, Number(CONFIG.restartWindowMin || 60)) * 60 * 1000;
+    if (lateMs > windowMs) {
+      console.log("Daily restart skipped (too late):", `${Math.round(lateMs/60000)}m late`);
+      scheduleDailyRestart();
+      return;
+    }
+
+    await triggerRestartNow("daily");
+    // 리로드/재시작이 성공하면 이 아래는 보통 실행되지 않음.
+    scheduleDailyRestart();
+  }, baseDelay + add);
+}
+
 async function maybeRegisterSW() {
   if (!CONFIG.enableOfflineCache) return;
   if (!("serviceWorker" in navigator)) return;
@@ -680,6 +777,9 @@ function setupFullscreen() {
 
   // 23:30 업데이트 예약
   scheduleDailyUpdate();
+
+  // 03:00(기본) 매일 새벽 재시작/새로고침 예약
+  scheduleDailyRestart();
 
   // 혹시 23:30 타이밍을 놓쳤거나, 네트워크가 복구되었을 때를 대비한 fallback
   setInterval(() => updatePlaylists("fallback"), CONFIG.playlistRefreshFallbackMs || 3600000);
