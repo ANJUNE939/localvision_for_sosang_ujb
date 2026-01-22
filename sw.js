@@ -1,5 +1,11 @@
-const STATIC_CACHE = "lv-static-v7";
-const MEDIA_CACHE  = "lv-media-v3"; // 기존 v1.2 캐시 재사용
+// LocalVision Service Worker (patched)
+// 목표
+// - 이미지(포스터 등)는 오프라인 대비로 MEDIA 캐시에 cache-first 유지
+// - playlist.json만 네트워크 우선(network-first)으로 받아서 즉시 업데이트 반영
+// - 영상(mp4 등)은 서비스워커가 개입하지 않음(206/Range/캐시 이슈 예방)
+
+const STATIC_CACHE = "lv-static-v8"; // ✅ 버전 올려서 업데이트 강제
+const MEDIA_CACHE  = "lv-media-v3"; // ✅ 미디어 캐시는 유지
 
 self.addEventListener("install", (event) => {
   event.waitUntil((async () => {
@@ -25,22 +31,56 @@ function isImageUrl(req) {
   const u = new URL(req.url);
   return /\.(jpg|jpeg|png|webp|gif)(\?|#|$)/i.test(u.pathname);
 }
-function hasRange(req) {
-  return req.headers && req.headers.has("range");
-}
 function isVideoUrl(req) {
   const u = new URL(req.url);
   return /\.(mp4|webm|mov)(\?|#|$)/i.test(u.pathname);
+}
+function isPlaylistUrl(req) {
+  const u = new URL(req.url);
+  return /\/playlist\.json$/i.test(u.pathname);
+}
+function playlistCacheKey(req) {
+  // ?v=... 같은 쿼리는 무시하고, 같은 경로의 playlist는 1개만 캐시되게
+  const u = new URL(req.url);
+  u.search = "";
+  u.hash = "";
+  return new Request(u.toString(), { method: "GET" });
+}
+
+async function playlistNetworkFirst(req) {
+  const cache = await caches.open(STATIC_CACHE);
+  const key = playlistCacheKey(req);
+
+  try {
+    const res = await fetch(req, { cache: "no-store" });
+    if (res && res.ok) {
+      cache.put(key, res.clone()).catch(() => {});
+      return res;
+    }
+    // 200이 아니면(예: 404) 캐시가 있으면 캐시로
+    const cached = await cache.match(key);
+    if (cached) return cached;
+    return res;
+  } catch {
+    const cached = await cache.match(key);
+    return cached || Response.error();
+  }
 }
 
 self.addEventListener("fetch", (event) => {
   const req = event.request;
   if (req.method !== "GET") return;
 
-  // 영상 Range 요청은 건드리지 않음(온라인 재생 안정)
-  if (isVideoUrl(req) && hasRange(req)) return;
+  // ✅ playlist.json: network-first (업데이트 즉시 반영)
+  if (isPlaylistUrl(req)) {
+    event.respondWith(playlistNetworkFirst(req));
+    return;
+  }
 
-  // 이미지: cache-first (오프라인 대비)
+  // ✅ 영상은 SW가 개입하지 않음(브라우저 기본 처리)
+  if (isVideoUrl(req)) return;
+
+  // ✅ 이미지: cache-first (오프라인 대비)
   if (isImageUrl(req)) {
     event.respondWith((async () => {
       const cache = await caches.open(MEDIA_CACHE);
@@ -49,7 +89,7 @@ self.addEventListener("fetch", (event) => {
 
       try {
         const res = await fetch(req);
-        cache.put(req, res.clone()).catch(()=>{});
+        cache.put(req, res.clone()).catch(() => {});
         return res;
       } catch {
         return cached || Response.error();
@@ -58,14 +98,14 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // 정적 파일: cache-first
+  // ✅ 정적 파일(index/app/sw 등): cache-first
   event.respondWith((async () => {
     const cache = await caches.open(STATIC_CACHE);
     const cached = await cache.match(req);
     if (cached) return cached;
 
     const res = await fetch(req);
-    cache.put(req, res.clone()).catch(()=>{});
+    cache.put(req, res.clone()).catch(() => {});
     return res;
   })());
 });
