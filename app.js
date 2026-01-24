@@ -1602,8 +1602,32 @@ function setupFullscreen() {
   const btn = els.fsBtn;
   if (!btn) return;
 
+  const HIDE_MS = 2500;
+  let hideT = null;
+
+  const show = (autoHide) => {
+    clearTimeout(hideT);
+    btn.classList.remove("hide");
+    if (autoHide) {
+      hideT = setTimeout(() => btn.classList.add("hide"), HIDE_MS);
+    }
+  };
+
   const updateBtn = () => {
     btn.textContent = document.fullscreenElement ? "⤢" : "⛶";
+    if (document.fullscreenElement) show(true);
+    else show(false);
+  };
+
+  const inTopRight = (x, y) => {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+    return x >= (window.innerWidth - 180) && y <= 180;
+  };
+
+  const peek = (x, y) => {
+    if (!document.fullscreenElement) return;
+    if (x != null && y != null && !inTopRight(x, y)) return;
+    show(true);
   };
 
   btn.addEventListener("click", async () => {
@@ -1620,6 +1644,19 @@ function setupFullscreen() {
   });
 
   document.addEventListener("fullscreenchange", updateBtn);
+
+  // 전체화면일 때: 우상단 탭하면 버튼이 잠깐 다시 보이게
+  document.addEventListener("pointerdown", (e) => peek(e.clientX, e.clientY), true);
+  document.addEventListener("touchstart", (e) => {
+    const t = e.touches && e.touches[0];
+    if (t) peek(t.clientX, t.clientY);
+  }, { capture: true, passive: true });
+
+  // 리모컨/키보드 입력이 들어오면 버튼 잠깐 표시
+  window.addEventListener("keydown", () => {
+    if (document.fullscreenElement) show(true);
+  }, true);
+
   updateBtn();
 }
 

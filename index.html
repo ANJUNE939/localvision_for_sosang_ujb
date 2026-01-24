@@ -113,10 +113,17 @@
       z-index:999;
       cursor:pointer;
       user-select:none;
-    }
+    
+      transition: opacity 180ms ease;
+}
     .fsbtn:active{ transform: scale(0.98); }
 
-    .diagbtn{
+    
+    .fsbtn.hide{
+      opacity:0;
+      pointer-events:none;
+    }
+.diagbtn{
       padding:10px 12px;
       border-radius:12px;
       border:1px solid rgba(255,255,255,0.18);
@@ -320,21 +327,62 @@
   <div class="netDock" id="netDock" aria-hidden="true"><div class="netBadge" id="netBadge">ONLINE</div></div>
   <script>
     // fsBtnInline: app.js가 에러로 멈춰도 전체화면 버튼은 동작하게(보험)
-    (function(){
-      const btn = document.getElementById('fsBtn');
-      if(!btn) return;
-      const update = ()=>{ btn.textContent = document.fullscreenElement ? "⤢" : "⛶"; };
-      btn.addEventListener('click', async ()=>{
-        try{
-          if(!document.fullscreenElement) await document.documentElement.requestFullscreen();
-          else await document.exitFullscreen();
-        }catch(e){ console.warn(e); }
-        update();
-      });
-      document.addEventListener('fullscreenchange', update);
-      update();
-    })();
-  </script>
+// + 전체화면 진입 후 우상단 버튼 자동 숨김(2.5초) — 필요 시 우상단 탭/리모컨 키로 다시 표시
+(function(){
+  const btn = document.getElementById('fsBtn');
+  if(!btn) return;
+
+  const HIDE_MS = 2500;
+  let hideT = null;
+
+  const show = (autoHide)=>{
+    clearTimeout(hideT);
+    btn.classList.remove('hide');
+    if(autoHide){
+      hideT = setTimeout(()=>btn.classList.add('hide'), HIDE_MS);
+    }
+  };
+
+  const update = ()=>{
+    btn.textContent = document.fullscreenElement ? "⤢" : "⛶";
+    if(document.fullscreenElement) show(true);
+    else show(false);
+  };
+
+  const inTopRight = (x,y)=>{
+    if(!Number.isFinite(x) || !Number.isFinite(y)) return false;
+    return (x >= (window.innerWidth - 180)) && (y <= 180);
+  };
+
+  const peek = (x,y)=>{
+    if(!document.fullscreenElement) return;
+    if(x!=null && y!=null && !inTopRight(x,y)) return;
+    show(true);
+  };
+
+  btn.addEventListener('click', async ()=>{
+    try{
+      if(!document.fullscreenElement) await document.documentElement.requestFullscreen();
+      else await document.exitFullscreen();
+    }catch(e){ console.warn(e); }
+    update();
+  });
+
+  document.addEventListener('fullscreenchange', update);
+
+  // 전체화면일 때: 우상단 탭하면 버튼 다시 잠깐 표시
+  document.addEventListener('pointerdown', (e)=>peek(e.clientX, e.clientY), true);
+  document.addEventListener('touchstart', (e)=>{
+    const t = e.touches && e.touches[0];
+    if(t) peek(t.clientX, t.clientY);
+  }, { capture:true, passive:true });
+
+  // 리모컨/키보드 입력이 들어오면 버튼 잠깐 표시
+  window.addEventListener('keydown', ()=>{ if(document.fullscreenElement) show(true); }, true);
+
+  update();
+})();
+</script>
 
   <div class="diag" id="diag">
     <h3>진단 패널</h3>
