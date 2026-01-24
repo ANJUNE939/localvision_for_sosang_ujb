@@ -113,17 +113,12 @@
       z-index:999;
       cursor:pointer;
       user-select:none;
-    
-      transition: opacity 180ms ease;
-}
-    .fsbtn:active{ transform: scale(0.98); }
-
-    
-    .fsbtn.hide{
-      opacity:0;
-      pointer-events:none;
     }
-.diagbtn{
+    .fsbtn:active{ transform: scale(0.98); }
+    .fsbtn{ transition: opacity 180ms ease; }
+    .fsbtn.hidden{ opacity:0; pointer-events:none; }
+
+    .diagbtn{
       padding:10px 12px;
       border-radius:12px;
       border:1px solid rgba(255,255,255,0.18);
@@ -327,67 +322,67 @@
   <div class="netDock" id="netDock" aria-hidden="true"><div class="netBadge" id="netBadge">ONLINE</div></div>
   <script>
     // fsBtnInline: app.js가 에러로 멈춰도 전체화면 버튼은 동작하게(보험)
-// + 전체화면 진입 후 우상단 버튼 자동 숨김(2.5초) — 필요 시 우상단 탭/리모컨 키로 다시 표시
-(function(){
-  const btn = document.getElementById('fsBtn');
-  if(!btn) return;
+    // v7: 전체화면 진입 후 2.5초 뒤 자동 숨김(우상단 터치/키 입력/마우스 이동 시 다시 표시)
+    (function(){
+      const btn = document.getElementById('fsBtn');
+      if(!btn) return;
+      try{ btn.dataset.lvFsBound = '1'; }catch(e){}
 
-  const HIDE_MS = 2500;
-  let hideT = null;
+      let hideTimer = null;
+      const updateIcon = ()=>{ btn.textContent = document.fullscreenElement ? "⤢" : "⛶"; };
 
-  const show = (autoHide)=>{
-    clearTimeout(hideT);
-    btn.classList.remove('hide');
-    if(autoHide){
-      hideT = setTimeout(()=>btn.classList.add('hide'), HIDE_MS);
-    }
-  };
+      const showBtn = ()=>{ btn.classList.remove('hidden'); };
+      const scheduleHide = ()=>{
+        clearTimeout(hideTimer);
+        if(!document.fullscreenElement) { showBtn(); return; }
+        hideTimer = setTimeout(()=>{ btn.classList.add('hidden'); }, 2500);
+      };
 
-  const update = ()=>{
-    btn.textContent = document.fullscreenElement ? "⤢" : "⛶";
-    if(document.fullscreenElement) show(true);
-    else show(false);
-  };
+      const revealIfTopRight = (ev)=>{
+        if(!document.fullscreenElement) return;
+        const x = (ev.touches && ev.touches[0] ? ev.touches[0].clientX : ev.clientX);
+        const y = (ev.touches && ev.touches[0] ? ev.touches[0].clientY : ev.clientY);
+        if(x == null || y == null) return;
+        if(x > window.innerWidth - 180 && y < 180){
+          showBtn();
+          scheduleHide();
+        }
+      };
 
-  const inTopRight = (x,y)=>{
-    if(!Number.isFinite(x) || !Number.isFinite(y)) return false;
-    return (x >= (window.innerWidth - 180)) && (y <= 180);
-  };
+      btn.addEventListener('click', async ()=>{
+        try{
+          if(!document.fullscreenElement) await document.documentElement.requestFullscreen();
+          else await document.exitFullscreen();
+        }catch(e){ console.warn(e); }
+        updateIcon();
+        // 전체화면이면 잠깐 보여주고 숨김 예약
+        showBtn();
+        scheduleHide();
+      });
 
-  const peek = (x,y)=>{
-    if(!document.fullscreenElement) return;
-    if(x!=null && y!=null && !inTopRight(x,y)) return;
-    show(true);
-  };
+      document.addEventListener('fullscreenchange', ()=>{
+        updateIcon();
+        showBtn();
+        scheduleHide();
+      });
 
-  btn.addEventListener('click', async ()=>{
-    try{
-      if(!document.fullscreenElement) await document.documentElement.requestFullscreen();
-      else await document.exitFullscreen();
-    }catch(e){ console.warn(e); }
-    update();
-  });
+      // 사용자 액션(리모컨/키/마우스/터치) 시 잠깐 표시
+      window.addEventListener('keydown', ()=>{ if(document.fullscreenElement){ showBtn(); scheduleHide(); } }, {passive:true});
+      window.addEventListener('mousemove', ()=>{ if(document.fullscreenElement){ showBtn(); scheduleHide(); } }, {passive:true});
+      window.addEventListener('touchstart', revealIfTopRight, {passive:true});
+      window.addEventListener('mousedown', revealIfTopRight, {passive:true});
 
-  document.addEventListener('fullscreenchange', update);
-
-  // 전체화면일 때: 우상단 탭하면 버튼 다시 잠깐 표시
-  document.addEventListener('pointerdown', (e)=>peek(e.clientX, e.clientY), true);
-  document.addEventListener('touchstart', (e)=>{
-    const t = e.touches && e.touches[0];
-    if(t) peek(t.clientX, t.clientY);
-  }, { capture:true, passive:true });
-
-  // 리모컨/키보드 입력이 들어오면 버튼 잠깐 표시
-  window.addEventListener('keydown', ()=>{ if(document.fullscreenElement) show(true); }, true);
-
-  update();
-})();
-</script>
+      updateIcon();
+      // 초기 상태: 전체화면이면 숨김 예약
+      scheduleHide();
+    })();
+  </script>
 
   <div class="diag" id="diag">
     <h3>진단 패널</h3>
     <div class="row"><div class="k">온라인</div><div class="v" id="dOnline">-</div></div>
     <div class="row"><div class="k">마지막 업데이트</div><div class="v" id="dUpdate">-</div></div>
+    <div class="row"><div class="k">빌드</div><div class="v" id="dBuild">-</div></div>
     <div class="row"><div class="k">LEFT 재생</div><div class="v" id="dLeft">-</div></div>
     <div class="row"><div class="k">RIGHT 재생</div><div class="v" id="dRight">-</div></div>
     <div class="row"><div class="k">캐시 상태</div><div class="v" id="dCache">-</div></div>

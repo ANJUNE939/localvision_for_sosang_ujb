@@ -4,7 +4,7 @@
 // - playlist.json만 네트워크 우선(network-first)으로 받아서 즉시 업데이트 반영
 // - 영상(mp4 등)은 서비스워커가 개입하지 않음(206/Range/캐시 이슈 예방)
 
-const STATIC_CACHE = "lv-static-v12"; // ✅ 버전 올려서 업데이트 강제 // ✅ 버전 올려서 업데이트 강제
+const STATIC_CACHE = "lv-static-v13"; // ✅ 버전 올려서 업데이트 강제 // ✅ 버전 올려서 업데이트 강제
 const MEDIA_CACHE  = "lv-media-v3"; // ✅ 미디어 캐시는 유지
 
 self.addEventListener("install", (event) => {
@@ -38,6 +38,21 @@ function isVideoUrl(req) {
 function isPlaylistUrl(req) {
   const u = new URL(req.url);
   return /\/playlist\.json$/i.test(u.pathname);
+}
+
+function isVersionUrl(req) {
+  const u = new URL(req.url);
+  return /\/version\.json$/i.test(u.pathname);
+}
+
+async function versionNetworkOnly(req) {
+  try {
+    // no-store로 항상 최신 확인
+    const r = new Request(req.url, { method: 'GET', cache: 'no-store' });
+    return await fetch(r);
+  } catch (e) {
+    return Response.error();
+  }
 }
 function playlistCacheKey(req) {
   // ?v=... 같은 쿼리는 무시하고, 같은 경로의 playlist는 1개만 캐시되게
@@ -98,6 +113,12 @@ function isStaticAsset(req) {
 self.addEventListener("fetch", (event) => {
   const req = event.request;
   if (req.method !== "GET") return;
+
+  // ✅ version.json: network-only (자동 업데이트 체크용)
+  if (isVersionUrl(req)) {
+    event.respondWith(versionNetworkOnly(req));
+    return;
+  }
 
   // ✅ playlist.json: network-first (업데이트 즉시 반영)
   if (isPlaylistUrl(req)) {

@@ -6,6 +6,7 @@ const els = {
   diag: $("diag"),
   dOnline: $("dOnline"),
   dUpdate: $("dUpdate"),
+  dBuild: $("dBuild"),
   dLeft: $("dLeft"),
   dRight: $("dRight"),
   dErr: $("dErr"),
@@ -18,6 +19,12 @@ const els = {
   netDock: $("netDock"),
   netBadge: $("netBadge")
 };
+
+// ===== Build / Version (v7) =====
+const LV_BUILD = "v7";
+const LV_BUILD_DETAIL = "v7-20260124_020757";
+let LV_REMOTE_BUILD = "-";
+let _lvUpdateReloadScheduled = false;
 
 // ===== Sleep Mode (Black/Screensaver) =====
 // 요구사항
@@ -863,7 +870,13 @@ async function loadConfig() {
     watchdogStallMs: numParam(params, "wdStall", 30000),
     watchdogMaxErrors: numParam(params, "wdErr", 3),
     watchdogWindowMs: numParam(params, "wdWin", 300000),
-    watchdogMemThreshold: numParam(params, "wdMem", 0.88)
+    watchdogMemThreshold: numParam(params, "wdMem", 0.88),
+
+    // ✅ 자동 버전 체크(무터치 업데이트): version.json 값이 바뀌면 자동 reload
+    versionWatchEnabled: boolParam(params, "verWatch", true),
+    versionCheckMs: numParam(params, "verCheckMs", 600000),
+    versionReloadJitterSec: numParam(params, "verReloadJitterSec", 30),
+    versionUrl: params.get("verUrl") || "./version.json"
   };
 }
 
@@ -1175,6 +1188,11 @@ function updateDiag() {
 
   const last = localStorage.getItem("lv_last_update") || "-";
   if (els.dUpdate) els.dUpdate.textContent = last;
+
+  if (els.dBuild) {
+    const r = (typeof LV_REMOTE_BUILD === 'string' && LV_REMOTE_BUILD !== '-') ? ` (remote:${LV_REMOTE_BUILD})` : '';
+    els.dBuild.textContent = `${LV_BUILD_DETAIL}${r}`;
+  }
 
   // 취침 상태 표시
   if (els.dSleep) {
@@ -1601,33 +1619,12 @@ function setupDiagToggle() {
 function setupFullscreen() {
   const btn = els.fsBtn;
   if (!btn) return;
+  // index.html 인라인 FS 핸들러가 이미 붙어있으면 중복 바인딩 방지
+  if (btn.dataset && btn.dataset.lvFsBound === '1') return;
 
-  const HIDE_MS = 2500;
-  let hideT = null;
-
-  const show = (autoHide) => {
-    clearTimeout(hideT);
-    btn.classList.remove("hide");
-    if (autoHide) {
-      hideT = setTimeout(() => btn.classList.add("hide"), HIDE_MS);
-    }
-  };
 
   const updateBtn = () => {
     btn.textContent = document.fullscreenElement ? "⤢" : "⛶";
-    if (document.fullscreenElement) show(true);
-    else show(false);
-  };
-
-  const inTopRight = (x, y) => {
-    if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
-    return x >= (window.innerWidth - 180) && y <= 180;
-  };
-
-  const peek = (x, y) => {
-    if (!document.fullscreenElement) return;
-    if (x != null && y != null && !inTopRight(x, y)) return;
-    show(true);
   };
 
   btn.addEventListener("click", async () => {
@@ -1644,20 +1641,84 @@ function setupFullscreen() {
   });
 
   document.addEventListener("fullscreenchange", updateBtn);
-
-  // 전체화면일 때: 우상단 탭하면 버튼이 잠깐 다시 보이게
-  document.addEventListener("pointerdown", (e) => peek(e.clientX, e.clientY), true);
-  document.addEventListener("touchstart", (e) => {
-    const t = e.touches && e.touches[0];
-    if (t) peek(t.clientX, t.clientY);
-  }, { capture: true, passive: true });
-
-  // 리모컨/키보드 입력이 들어오면 버튼 잠깐 표시
-  window.addEventListener("keydown", () => {
-    if (document.fullscreenElement) show(true);
-  }, true);
-
   updateBtn();
+}
+
+
+function setupSWControllerReload() {
+  if (!("serviceWorker" in navigator)) return;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    // 새 SW가 컨트롤러로 바뀌면 한 번만 자동 리로드
+    try {
+      if (sessionStorage.getItem('lv_sw_controller_reload') === '1') return;
+      sessionStorage.setItem('lv_sw_controller_reload', '1');
+    } catch {}
+    setTimeout(() => {
+      try { location.reload(); } catch {}
+    }, 300);
+  });
+}
+
+async function fetchRemoteBuild() {
+  const url = (CONFIG.versionUrl || './version.json');
+  // 캐시/엣지 영향 최소화: 쿼리 스티커 + no-store
+  const u = url + (url.includes('?') ? '&' : '?') + 't=' + Date.now();
+  const res = await fetch(u, { cache: 'no-store' });
+  if (!res.ok) throw new Error('version fetch ' + res.status);
+  const data = await res.json();
+  const build = String(data.build ?? data.version ?? data.v ?? '').trim();
+  return build || '-';
+}
+
+function scheduleAutoReload(reason, targetBuild) {
+  if (_lvUpdateReloadScheduled) return;
+  _lvUpdateReloadScheduled = true;
+
+  const jitterMs = Math.max(0, Number(CONFIG.versionReloadJitterSec || 30)) * 1000;
+  const delay = 2000 + Math.floor(Math.random() * (jitterMs + 1));
+
+  try { localStorage.setItem('lv_version_target', String(targetBuild || '')); } catch {}
+  try { localStorage.setItem('lv_version_reload_planned', String(Date.now() + delay)); } catch {}
+
+  console.log('[VERSION] change detected → reload scheduled in', Math.round(delay/1000),'s', reason, targetBuild);
+  setTimeout(() => {
+    try { localStorage.setItem('lv_version_last_reload', String(Date.now())); } catch {}
+    try { location.reload(); } catch {}
+  }, delay);
+}
+
+function setupVersionWatcher() {
+  if (!CONFIG.versionWatchEnabled) return;
+
+  // 디바이스가 계속 리로드 루프에 빠지지 않도록 최소 간격 제한
+  const MIN_GAP_MS = 10 * 60 * 1000;
+
+  const tick = async () => {
+    try {
+      if (!navigator.onLine) return;
+      LV_REMOTE_BUILD = await fetchRemoteBuild();
+      updateDiag();
+
+      if (LV_REMOTE_BUILD !== '-' && LV_REMOTE_BUILD !== LV_BUILD) {
+        let last = 0;
+        try { last = Number(localStorage.getItem('lv_version_last_reload') || 0); } catch {}
+        if (Date.now() - last < MIN_GAP_MS) {
+          console.log('[VERSION] detected but throttled');
+          return;
+        }
+        scheduleAutoReload('remote build differs', LV_REMOTE_BUILD);
+      }
+    } catch (e) {
+      // 조용히 실패: 네트워크/캐시 이슈 가능
+    }
+  };
+
+  const base = Math.max(60000, Number(CONFIG.versionCheckMs || 600000));
+  const firstDelay = 15000 + Math.floor(Math.random() * 15000);
+  setTimeout(() => {
+    tick();
+    setInterval(tick, base);
+  }, firstDelay);
 }
 
 (async function init(){
@@ -1665,6 +1726,7 @@ function setupFullscreen() {
   setupDiagToggle();
   setupFullscreen();
   setupSleepUI();
+  setupSWControllerReload();
 
   // ✅ 진단패널에서 취침 설정/즉시토글(리모컨 OK로 조작 가능)
   if (els.btnSleepOpen) els.btnSleepOpen.addEventListener("click", () => { SLEEP_MANUAL = null; openSleepPanel(); });
@@ -1691,6 +1753,9 @@ function setupFullscreen() {
 
   // 03:00(기본) 매일 새벽 재시작/새로고침 예약
   scheduleDailyRestart();
+
+  // ✅ v7: 버전 체크로 무터치 자동 업데이트
+  setupVersionWatcher();
 
   // 혹시 23:30 타이밍을 놓쳤거나, 네트워크가 복구되었을 때를 대비한 fallback
   setInterval(() => updatePlaylists("fallback"), CONFIG.playlistRefreshFallbackMs || 3600000);
