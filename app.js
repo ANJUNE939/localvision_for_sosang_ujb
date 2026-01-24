@@ -11,16 +11,474 @@ const els = {
   dErr: $("dErr"),
   dCache: $("dCache"),
   hotspot: $("hotspot"),
-  fsBtn: $("fsBtn")
+  fsBtn: $("fsBtn"),
+  netDock: $("netDock"),
+  netBadge: $("netBadge")
 };
+
+// ===== Sleep Mode (Black/Screensaver) =====
+// 요구사항
+// - 진입: (기본) 우하단 1초 롱프레스  + (옵션) OK 7번 / ↑↑↓↓ 시퀀스
+// - 입력: 텍스트 금지, 버튼으로 +10m/-10m/+1h/-1h
+// - 저장: localStorage (전원 껐다 켜도 유지)
+// - 우선순위: URL 파라미터 > 점주 저장값 > STORE_SLEEP(코드 기본값) > 기본값(00:00~09:30)
+// - 동작: 검정 오버레이(또는 스크린세이버) + (권장) video pause/mute
+
+const SLEEP_LS_KEY = "lv_sleep_settings_v1";
+const DEFAULT_SLEEP = { start: "00:00", end: "09:30", mode: "black" };
+
+// (옵션) 매장별 코드 기본값: 필요하면 여기 채워주세요.
+const STORE_SLEEP = {
+  presets: {
+    // sbflower: { start: "01:00", end: "09:00", mode: "black" },
+    // jtchiken: { start: "01:00", end: "09:00", mode: "black" },
+  },
+  default: null
+};
+
+let SLEEP_ACTIVE = false;
+let _sleepResolved = { ...DEFAULT_SLEEP, _src: "default" };
+let _sleepEdit = { ...DEFAULT_SLEEP, target: "start" };
+
+function _normHHMM(v, fallback) {
+  const s = String(v || "").trim();
+  const m = s.match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return fallback;
+  let hh = Math.min(23, Math.max(0, Number(m[1])));
+  let mm = Math.min(59, Math.max(0, Number(m[2])));
+  return `${String(hh).padStart(2,"0")}:${String(mm).padStart(2,"0")}`;
+}
+function _toMin(hhmm) {
+  const m = String(hhmm || "").split(":");
+  if (m.length < 2) return 0;
+  return (Number(m[0]) * 60 + Number(m[1])) % (24 * 60);
+}
+function _fromMin(min) {
+  const t = ((min % (24*60)) + (24*60)) % (24*60);
+  const hh = Math.floor(t / 60);
+  const mm = t % 60;
+  return `${String(hh).padStart(2,"0")}:${String(mm).padStart(2,"0")}`;
+}
+function _addMin(hhmm, delta) {
+  return _fromMin(_toMin(hhmm) + delta);
+}
+function _safeJsonParse(s) {
+  try { return JSON.parse(s); } catch { return null; }
+}
+function _readSavedSleep() {
+  const raw = localStorage.getItem(SLEEP_LS_KEY);
+  const obj = raw ? _safeJsonParse(raw) : null;
+  if (!obj || typeof obj !== "object") return null;
+  const out = {
+    start: _normHHMM(obj.start, null),
+    end: _normHHMM(obj.end, null),
+    mode: (obj.mode === "saver") ? "saver" : (obj.mode === "black" ? "black" : null),
+  };
+  if (!out.start || !out.end || !out.mode) return null;
+  return out;
+}
+function _writeSavedSleep(v) {
+  localStorage.setItem(SLEEP_LS_KEY, JSON.stringify({
+    start: _normHHMM(v.start, DEFAULT_SLEEP.start),
+    end: _normHHMM(v.end, DEFAULT_SLEEP.end),
+    mode: (v.mode === "saver") ? "saver" : "black",
+    savedAt: Date.now()
+  }));
+}
+
+function resolveSleepConfig(storeSlug) {
+  const params = new URLSearchParams(location.search);
+
+  const urlStart = params.get("sleepStart") || params.get("ss");
+  const urlEnd   = params.get("sleepEnd")   || params.get("se");
+  const urlMode  = params.get("sleepMode")  || params.get("sm");
+
+  const saved = _readSavedSleep();
+  const codeDefault = (STORE_SLEEP.presets && STORE_SLEEP.presets[storeSlug]) || STORE_SLEEP.default;
+
+  // base → codeDefault → saved → url
+  let cfg = { ...DEFAULT_SLEEP, _src: "default" };
+  if (codeDefault) { cfg = { ...cfg, ...codeDefault, _src: "STORE_SLEEP" }; }
+  if (saved) { cfg = { ...cfg, ...saved, _src: "saved" }; }
+
+  if (urlStart || urlEnd || urlMode) {
+    cfg = {
+      ...cfg,
+      start: urlStart ? _normHHMM(urlStart, cfg.start) : cfg.start,
+      end: urlEnd ? _normHHMM(urlEnd, cfg.end) : cfg.end,
+      mode: urlMode === "saver" ? "saver" : "black",
+      _src: "url"
+    };
+  }
+
+  cfg.start = _normHHMM(cfg.start, DEFAULT_SLEEP.start);
+  cfg.end   = _normHHMM(cfg.end, DEFAULT_SLEEP.end);
+  cfg.mode  = (cfg.mode === "saver") ? "saver" : "black";
+  return cfg;
+}
+
+function isSleepNow(cfg, now = new Date()) {
+  const s = _toMin(cfg.start);
+  const e = _toMin(cfg.end);
+  const m = now.getHours() * 60 + now.getMinutes();
+
+  // start == end → 취침 비활성(실수 방지)
+  if (s === e) return false;
+
+  // same-day window
+  if (s < e) return (m >= s && m < e);
+
+  // overnight window (e.g. 23:00~06:00)
+  return (m >= s || m < e);
+}
+
+function setSleepActive(on) {
+  if (on === SLEEP_ACTIVE) return;
+  SLEEP_ACTIVE = on;
+
+  const shield = document.getElementById("sleepShield");
+  const saver = document.getElementById("sleepSaver");
+  if (!shield) return;
+
+  if (on) {
+    // overlay
+    shield.classList.add("on");
+    shield.classList.toggle("saver", _sleepResolved.mode === "saver");
+
+    // pause players (reduce load)
+    try { leftPlayer.pauseForSleep(); } catch {}
+    try { rightPlayer.pauseForSleep(); } catch {}
+  } else {
+    shield.classList.remove("on");
+    shield.classList.remove("saver");
+
+    // resume
+    try { leftPlayer.play(); } catch {}
+    try { rightPlayer.play(); } catch {}
+  }
+}
+
+function updateSleepUI() {
+  const p = document.getElementById("sleepPanel");
+  if (!p) return;
+
+  const startEl = document.getElementById("sleepStartVal");
+  const endEl = document.getElementById("sleepEndVal");
+  if (startEl) startEl.textContent = _sleepEdit.start;
+  if (endEl) endEl.textContent = _sleepEdit.end;
+
+  const sBtn = document.getElementById("sleepSelectStart");
+  const eBtn = document.getElementById("sleepSelectEnd");
+  if (sBtn) sBtn.classList.toggle("on", _sleepEdit.target === "start");
+  if (eBtn) eBtn.classList.toggle("on", _sleepEdit.target === "end");
+
+  const bBtn = document.getElementById("sleepModeBlack");
+  const vBtn = document.getElementById("sleepModeSaver");
+  if (bBtn) bBtn.classList.toggle("on", _sleepEdit.mode === "black");
+  if (vBtn) vBtn.classList.toggle("on", _sleepEdit.mode === "saver");
+}
+
+function openSleepPanel() {
+  const p = document.getElementById("sleepPanel");
+  if (!p) return;
+
+  const store = CONFIG?.store || safeSlug(new URLSearchParams(location.search).get("store"), DEFAULT_STORE);
+  _sleepResolved = resolveSleepConfig(store);
+  _sleepEdit = { start: _sleepResolved.start, end: _sleepResolved.end, mode: _sleepResolved.mode, target: "start" };
+
+  p.classList.add("open");
+  p.setAttribute("aria-hidden", "false");
+  updateSleepUI();
+
+  // focus first button for remote
+  const first = document.getElementById("sleepSelectStart");
+  first && first.focus && first.focus();
+}
+
+function closeSleepPanel() {
+  const p = document.getElementById("sleepPanel");
+  if (!p) return;
+  p.classList.remove("open");
+  p.setAttribute("aria-hidden", "true");
+}
+
+function tickSleep() {
+  const store = CONFIG?.store || safeSlug(new URLSearchParams(location.search).get("store"), DEFAULT_STORE);
+  _sleepResolved = resolveSleepConfig(store);
+  setSleepActive(isSleepNow(_sleepResolved));
+}
+
+function setupSleepUI() {
+  // bottom-right long press (1s) — works even while sleepShield is covering the screen.
+  // 구현 포인트:
+  // - 별도 overlay div로 클릭을 가로막지 않고, "우하단 코너 영역"을 좌표로 감지합니다.
+  // - 롱프레스가 트리거된 경우에만, 해당 코너 영역의 '다음 click 1회'를 막아(광고 링크 오작동 방지) 패널만 뜨게 합니다.
+  const CORNER = { w: 140, h: 140, ms: 1000 }; // 우하단 감지 영역/시간(필요하면 조절)
+  let pressTimer = null;
+  let activePointerId = null;
+  let suppressClickUntil = 0;
+
+  const inCorner = (e) => {
+    const x = (e.touches && e.touches[0]) ? e.touches[0].clientX : e.clientX;
+    const y = (e.touches && e.touches[0]) ? e.touches[0].clientY : e.clientY;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+    return x >= (window.innerWidth - CORNER.w) && y >= (window.innerHeight - CORNER.h);
+  };
+
+  const clearPress = () => {
+    if (pressTimer) clearTimeout(pressTimer);
+    pressTimer = null;
+    activePointerId = null;
+  };
+
+  const startPress = (e) => {
+    // 멀티 터치/스크롤 중에는 무시
+    if (!inCorner(e)) return;
+    clearPress();
+    activePointerId = e.pointerId ?? "touch";
+    pressTimer = setTimeout(() => {
+      suppressClickUntil = Date.now() + 900; // 롱프레스 직후 클릭 1회 차단용 타임윈도우
+      openSleepPanel();
+    }, CORNER.ms);
+  };
+
+  const endPress = (e) => {
+    const pid = e.pointerId ?? "touch";
+    if (activePointerId && pid !== activePointerId) return;
+    clearPress();
+  };
+
+  // capture 단계로 걸어두면, 기존 클릭(광고 링크 등)을 최대한 방해하지 않습니다.
+  document.addEventListener("pointerdown", startPress, true);
+  document.addEventListener("pointerup", endPress, true);
+  document.addEventListener("pointercancel", endPress, true);
+  document.addEventListener("pointerleave", endPress, true);
+
+  // 터치만 지원하는 환경 대비
+  document.addEventListener("touchstart", startPress, { capture:true, passive:true });
+  document.addEventListener("touchend", endPress, { capture:true, passive:true });
+  document.addEventListener("touchcancel", endPress, { capture:true, passive:true });
+
+  // 롱프레스가 트리거된 직후에는 코너 영역 클릭을 1회만 막아 "링크 오작동"을 방지합니다.
+  document.addEventListener("click", (e) => {
+    if (Date.now() > suppressClickUntil) return;
+    // click 이벤트에는 touches가 없으므로 clientX/Y 사용
+    if (inCorner(e)) {
+      e.preventDefault();
+      e.stopPropagation();
+      suppressClickUntil = 0;
+    }
+  }, true);
+
+  // panel buttons
+
+  const bind = (id, fn) => {
+    const el = document.getElementById(id);
+    el && el.addEventListener("click", fn);
+  };
+
+  bind("sleepClose", closeSleepPanel);
+
+  bind("sleepSelectStart", () => { _sleepEdit.target = "start"; updateSleepUI(); });
+  bind("sleepSelectEnd", () => { _sleepEdit.target = "end"; updateSleepUI(); });
+
+  bind("sleepMinusHour", () => {
+    if (_sleepEdit.target === "start") _sleepEdit.start = _addMin(_sleepEdit.start, -60);
+    else _sleepEdit.end = _addMin(_sleepEdit.end, -60);
+    updateSleepUI();
+  });
+  bind("sleepMinus10", () => {
+    if (_sleepEdit.target === "start") _sleepEdit.start = _addMin(_sleepEdit.start, -10);
+    else _sleepEdit.end = _addMin(_sleepEdit.end, -10);
+    updateSleepUI();
+  });
+  bind("sleepPlus10", () => {
+    if (_sleepEdit.target === "start") _sleepEdit.start = _addMin(_sleepEdit.start, +10);
+    else _sleepEdit.end = _addMin(_sleepEdit.end, +10);
+    updateSleepUI();
+  });
+  bind("sleepPlusHour", () => {
+    if (_sleepEdit.target === "start") _sleepEdit.start = _addMin(_sleepEdit.start, +60);
+    else _sleepEdit.end = _addMin(_sleepEdit.end, +60);
+    updateSleepUI();
+  });
+
+  bind("sleepModeBlack", () => { _sleepEdit.mode = "black"; updateSleepUI(); });
+  bind("sleepModeSaver", () => { _sleepEdit.mode = "saver"; updateSleepUI(); });
+
+  bind("sleepReset", () => {
+    _sleepEdit = { ...DEFAULT_SLEEP, target: "start" };
+    updateSleepUI();
+  });
+
+  bind("sleepSave", () => {
+    _writeSavedSleep(_sleepEdit);
+    closeSleepPanel();
+    tickSleep(); // apply immediately
+  });
+
+
+  // 프리셋(점주 원터치)
+  bind("sleepPresetDefault", () => {
+    _sleepEdit.startMin = 0;          // 00:00
+    _sleepEdit.endMin   = 9*60 + 30;  // 09:30
+    updateSleepUI();
+  });
+  bind("sleepPresetNight", () => {
+    _sleepEdit.startMin = 4*60;       // 04:00
+    _sleepEdit.endMin   = 14*60;      // 14:00
+    updateSleepUI();
+  });
+  bind("sleepPresetOff", () => {
+    _sleepEdit.startMin = 0;
+    _sleepEdit.endMin   = 0;          // start==end => OFF
+    updateSleepUI();
+  });
+
+  // Optional key sequences (remote-friendly)
+  let okCount = 0;
+  let okTimer = null;
+
+  const seq = [];
+  const pushSeq = (k) => {
+    seq.push(k);
+    while (seq.length > 4) seq.shift();
+    if (seq.join(",") === "ArrowUp,ArrowUp,ArrowDown,ArrowDown") {
+      openSleepPanel();
+      seq.length = 0;
+    }
+  };
+
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      okCount++;
+      clearTimeout(okTimer);
+      okTimer = setTimeout(() => { okCount = 0; }, 2000);
+      if (okCount >= 7) { openSleepPanel(); okCount = 0; }
+    }
+    if (["ArrowUp","ArrowDown"].includes(e.key)) pushSeq(e.key);
+  });
+
+  // start ticking
+  tickSleep();
+  setInterval(tickSleep, 10000);
+}
+
 
 let CONFIG = null;
 let errorCount = 0;
+
+function watchdogTouch(side, currentTime=0) {
+  try {
+    WD_STATE.lastTU[side] = Date.now();
+    WD_STATE.lastCT[side] = currentTime || 0;
+  } catch {}
+}
+function watchdogStall(side, why="") {
+  // 가벼운 기록만 (실제 복구는 주기 체크에서)
+  try { WD_STATE.stallHits += 1; } catch {}
+}
+function watchdogRecordError(reason="") {
+  try {
+    if (!CONFIG?.watchdogEnabled) return;
+    if (SLEEP_ACTIVE) return;
+    if (/offline/i.test(reason)) return;
+
+    const now = Date.now();
+    WD_STATE.errTimes.push(now);
+    const win = CONFIG.watchdogWindowMs || 300000;
+    WD_STATE.errTimes = WD_STATE.errTimes.filter(t => (now - t) < win);
+  } catch {}
+}
+function watchdogSoftKick(reason="") {
+  try {
+    console.warn("[WATCHDOG] soft kick:", reason);
+    leftPlayer.play();
+    rightPlayer.play();
+  } catch {}
+}
+function watchdogHardReload(reason="") {
+  console.warn("[WATCHDOG] hard reload:", reason);
+  try { triggerRestartNow(); } catch { try { location.reload(); } catch {} }
+}
+
+function setupWatchdog() {
+  setInterval(() => {
+    try {
+      if (!CONFIG?.watchdogEnabled) return;
+      if (SLEEP_ACTIVE) return;
+
+      const now = Date.now();
+      const stallMs = CONFIG.watchdogStallMs || 30000;
+
+      // 1) 영상 timeupdate 정지 감지(30초)
+      for (const side of ["LEFT", "RIGHT"]) {
+        const player = side === "LEFT" ? leftPlayer : rightPlayer;
+        const vid = player?.el?.vid;
+        if (!vid) continue;
+
+        const visible = vid.style.display === "block";
+        if (!visible) continue;
+        if (vid.paused) continue;
+
+        const last = WD_STATE.lastTU[side] || 0;
+        if (last && (now - last) > stallMs) {
+          WD_STATE.lastTU[side] = now; // 반복 트리거 방지
+          watchdogSoftKick(`${side} stalled`);
+        }
+      }
+
+      // 2) 오류 누적(기준: 3회) → 하드 리로드
+      const win = CONFIG.watchdogWindowMs || 300000;
+      WD_STATE.errTimes = WD_STATE.errTimes.filter(t => (now - t) < win);
+      if (WD_STATE.errTimes.length >= (CONFIG.watchdogMaxErrors || 3)) {
+        WD_STATE.errTimes = [];
+        watchdogHardReload(`errors >= ${CONFIG.watchdogMaxErrors || 3}`);
+        return;
+      }
+
+      // 3) 메모리 경고(가능한 브라우저에서만)
+      try {
+        const pm = performance && performance.memory;
+        if (pm && pm.usedJSHeapSize && pm.jsHeapSizeLimit) {
+          const ratio = pm.usedJSHeapSize / pm.jsHeapSizeLimit;
+          const th = CONFIG.watchdogMemThreshold || 0.88;
+          if (ratio > th) {
+            WD_STATE.memHits += 1;
+            if (WD_STATE.memHits >= 3) {
+              WD_STATE.memHits = 0;
+              watchdogHardReload(`memory ${(ratio * 100).toFixed(0)}%`);
+            }
+          } else {
+            WD_STATE.memHits = 0;
+          }
+        }
+      } catch {}
+    } catch {}
+  }, 5000);
+}
+
 
 const MEDIA_CACHE = "lv-media-v3";
 const STATIC_CACHE = "lv-static-v3";
 const CACHE_STATE = { total: 0, done: 0, running: false, msg: "-" };
 const NET_STATE = { online: navigator.onLine, lastProbe: null };
+
+let PENDING_SYNC = false; // 오프라인이면 "다음 동기화 대기"
+let LAST_SIG = { LEFT: "", RIGHT: "" };
+
+// media cache 메타(LRU 비슷하게 ts/우선순위 관리)
+const MEDIA_META_KEY = "lv_media_meta_v1";
+
+// watchdog 상태
+const WD_STATE = {
+  lastTU: { LEFT: 0, RIGHT: 0 },
+  lastCT: { LEFT: 0, RIGHT: 0 },
+  errTimes: [],
+  stallHits: 0,
+  memHits: 0
+};
+
 
 function nowStr() {
   const d = new Date();
@@ -31,6 +489,7 @@ function nowStr() {
 function setOnlineState(v, why="") {
   NET_STATE.online = !!v;
   NET_STATE.lastProbe = why ? `${nowStr()} ${why}` : nowStr();
+  updateNetBadge();
 }
 
 async function probeOnline(timeoutMs=2000) {
@@ -52,6 +511,20 @@ async function probeOnline(timeoutMs=2000) {
 function isVideo(url=""){ return /\.(mp4|webm|ogg)(\?|#|$)/i.test(url); }
 function isImage(url=""){ return /\.(jpg|jpeg|png|webp|gif)(\?|#|$)/i.test(url); }
 
+
+function updateNetBadge() {
+  if (!els.netDock || !els.netBadge) return;
+  if (CONFIG && CONFIG.enableNetBadge === false) {
+    els.netDock.style.display = "none";
+    return;
+  }
+  const online = !!NET_STATE.online;
+  const wait = !online && !!PENDING_SYNC;
+  els.netDock.style.display = "";
+  els.netBadge.textContent = wait ? "OFFLINE · SYNC WAIT" : (online ? "ONLINE" : "OFFLINE");
+}
+
+
 function resolveUrl(u="", base="") {
   if (!u) return "";
   // 이미 절대 URL이면 그대로, 상대경로면 playlist.json 위치를 기준으로 절대 URL로 변환
@@ -69,9 +542,17 @@ async function cacheHas(url) {
   return !!hit;
 }
 
-async function cachePut(url, res) {
+async function cachePut(url, res, meta={}) {
   const cache = await getMediaCache();
   try { await cache.put(url, res); } catch {}
+  try {
+    touchMediaMeta(url, {
+      ts: Date.now(),
+      pri: Number(meta.pri || meta.priority || 1),
+      side: meta.side || meta.group || "",
+      type: meta.type || (isVideo(url) ? "video" : "image")
+    });
+  } catch {}
 }
 
 async function cacheGet(url) {
@@ -79,34 +560,106 @@ async function cacheGet(url) {
   try { return await cache.match(url); } catch { return null; }
 }
 
+function readMediaMeta() {
+  try { return JSON.parse(localStorage.getItem(MEDIA_META_KEY) || "{}") || {}; } catch { return {}; }
+}
+function writeMediaMeta(m) {
+  try { localStorage.setItem(MEDIA_META_KEY, JSON.stringify(m || {})); } catch {}
+}
+function touchMediaMeta(url, patch={}) {
+  if (!url) return;
+  const meta = readMediaMeta();
+  const prev = meta[url] || {};
+  const priPrev = Number(prev.pri || 1);
+  const priNew  = Number(patch.pri || priPrev || 1);
+  meta[url] = {
+    ...prev,
+    ...patch,
+    pri: Math.max(priPrev, priNew),
+    ts: Number(patch.ts || Date.now()),
+    type: patch.type || prev.type || (isVideo(url) ? "video" : "image")
+  };
+  writeMediaMeta(meta);
+}
 
-async function ensureCached(url) {
+function collectKeepUrls() {
+  const out = [];
   try {
-    const has = await cacheHas(url);
-    if (has) return true;
-    if (!navigator.onLine) return false;
+    if (leftPlayer?.currentUrl) out.push(leftPlayer.currentUrl);
+    if (rightPlayer?.currentUrl) out.push(rightPlayer.currentUrl);
+    const ln = leftPlayer?.list || [];
+    const rn = rightPlayer?.list || [];
+    if (ln.length) out.push(ln[(leftPlayer.idx + 1) % ln.length]?.url);
+    if (rn.length) out.push(rn[(rightPlayer.idx + 1) % rn.length]?.url);
+  } catch {}
+  return [...new Set(out.filter(Boolean))];
+}
+
+async function ensureCached(url, meta={}) {
+  try {
+    const hit = await cacheGet(url);
+    if (hit) { touchMediaMeta(url, { ...meta, ts: Date.now() }); return true; }
+    if (!NET_STATE.online) return false;
+
     const res = await fetch(url, { cache: "no-store" });
     if (res && res.ok) {
-      await cachePut(url, res.clone());
+      await cachePut(url, res.clone(), meta);
       return true;
     }
   } catch {}
   return false;
 }
 
-async function trimMediaCache(keepUrls=[]) {
-  const keep = new Set(keepUrls);
-  const cache = await getMediaCache();
-  const keys = await cache.keys();
-  await Promise.all(keys.map(req => {
-    const u = req.url;
-    if (!keep.has(u)) return cache.delete(req);
-  }));
+async function pruneMediaCache({ keepUrls=[], maxEntries=12 } = {}) {
+  try {
+    const cache = await getMediaCache();
+    const keys = await cache.keys();
+    if (!keys || keys.length <= maxEntries) return;
+
+    const keep = new Set((keepUrls || []).filter(Boolean));
+    const meta = readMediaMeta();
+
+    const entries = keys.map(req => {
+      const u = req.url;
+      const m = meta[u] || {};
+      const pri = Number(m.pri || 1);
+      const ts = Number(m.ts || 0);
+      const type = m.type || (isVideo(u) ? "video" : "image");
+      // 삭제 우선순위: (1) 우선순위 낮은 것 (2) video 먼저 (3) 오래된 것
+      const typePri = type === "video" ? 0 : 1;
+      return { req, u, pri, ts, typePri, keep: keep.has(u) };
+    });
+
+    const victims = entries
+      .filter(e => !e.keep)
+      .sort((a,b) => (a.pri - b.pri) || (a.typePri - b.typePri) || (a.ts - b.ts));
+
+    let cur = keys.length;
+    for (const v of victims) {
+      if (cur <= maxEntries) break;
+      await cache.delete(v.req);
+      delete meta[v.u];
+      cur -= 1;
+    }
+    writeMediaMeta(meta);
+  } catch {}
 }
 
-async function prefetchAllMedia(urls=[]) {
+async function prefetchUrls(urls=[], metaMap={}) {
   if (!CONFIG?.enableOfflineCache) return;
-  if (!navigator.onLine) return;
+  if (!NET_STATE.online) return;
+  const uniq = [...new Set(urls)].filter(Boolean);
+  if (!uniq.length) return;
+
+  for (const u of uniq) {
+    const meta = (metaMap && metaMap[u]) ? metaMap[u] : {};
+    await ensureCached(u, meta);
+  }
+}
+
+async function prefetchAllMedia(urls=[], metaMap={}) {
+  if (!CONFIG?.enableOfflineCache) return;
+  if (!NET_STATE.online) return;
 
   const uniq = [...new Set(urls)].filter(Boolean);
   if (!uniq.length) return;
@@ -119,19 +672,18 @@ async function prefetchAllMedia(urls=[]) {
   for (const u of uniq) {
     try {
       const already = await cacheGet(u);
-      if (already) { CACHE_STATE.done += 1; continue; }
-
-      const res = await fetch(u, { cache: "no-store" });
-      if (res && res.ok) {
-        await cachePut(u, res.clone());
-      }
+      if (already) touchMediaMeta(u, { ...(metaMap[u] || {}), ts: Date.now() });
+      else await ensureCached(u, metaMap[u] || {});
     } catch {}
     CACHE_STATE.done += 1;
     updateDiag();
   }
 
-  // 현재 목록에 없는 오래된 파일은 정리
-  try { await trimMediaCache(uniq); } catch {}
+  // 상한 초과 시: 오래된 것부터 삭제 (좌측(LEFT)은 더 오래 유지)
+  try {
+    const keep = collectKeepUrls().concat(uniq);
+    await pruneMediaCache({ keepUrls: keep, maxEntries: CONFIG.cacheMaxEntries || 12 });
+  } catch {}
 
   CACHE_STATE.running = false;
   CACHE_STATE.msg = "완료";
@@ -139,29 +691,34 @@ async function prefetchAllMedia(urls=[]) {
 }
 
 
-async function getVideoBlobUrlFromCache(url) {
+async function getVideoBlobUrlFromCache(url, meta={}) {
   const res = await cacheGet(url);
   if (!res) throw new Error("not cached");
+  try { touchMediaMeta(url, { ...(meta||{}), ts: Date.now(), type: "video" }); } catch {}
   const blob = await res.blob();
   return URL.createObjectURL(blob);
 }
 
-async function getVideoBlobUrl(url) {
+
+async function getVideoBlobUrl(url, meta={}) {
   // 1) 캐시에 있으면 캐시에서 blob으로
   let res = await cacheGet(url);
-  if (!res && navigator.onLine) {
-    // 2) 없으면 네트워크에서 통째로 받아 캐시에 저장
+
+  // 2) 없으면(온라인일 때) 네트워크에서 통째로 받아 캐시에 저장
+  if (!res && NET_STATE.online) {
     const netRes = await fetch(url, { cache: "no-store" });
     if (netRes && netRes.ok) {
-      await cachePut(url, netRes.clone());
+      await cachePut(url, netRes.clone(), { ...(meta||{}), type: "video" });
       res = netRes;
     }
   }
   if (!res) throw new Error("video not available");
 
+  try { touchMediaMeta(url, { ...(meta||{}), ts: Date.now(), type: "video" }); } catch {}
   const blob = await res.blob();
   return URL.createObjectURL(blob);
 }
+
 
 // ===== AUTO STORE CONFIG (v1.4.0) =====
 // - config.json 없이 URL 파라미터로 자동 구성합니다.
@@ -264,7 +821,23 @@ async function loadConfig() {
     restartWindowMin: numParam(params, "restartWindowMin", 60),
 
     enableOfflineCache: boolParam(params, "offline", true),
-    cacheStrategy: params.get("cache") || "prefetch-next"
+    cacheStrategy: params.get("cache") || "prefetch-next",
+
+    // cache 관리(엔트리 수 기준)
+    cacheMaxEntries: numParam(params, "cacheMax", 12),
+
+    // 네트워크 배지(우하단, 호버 시 표시)
+    enableNetBadge: boolParam(params, "netBadge", true),
+
+    // 업데이트 안전 반영(미리 로드 확인)
+    updatePrefetchTimeoutMs: numParam(params, "upPrefetch", 6000),
+
+    // Watchdog(자가복구)
+    watchdogEnabled: boolParam(params, "wd", true),
+    watchdogStallMs: numParam(params, "wdStall", 30000),
+    watchdogMaxErrors: numParam(params, "wdErr", 3),
+    watchdogWindowMs: numParam(params, "wdWin", 300000),
+    watchdogMemThreshold: numParam(params, "wdMem", 0.88)
   };
 }
 
@@ -295,10 +868,19 @@ class SimplePlayer {
     this.currentLink = "";
     this.loadTimer = null;
     this.imgTimer = null;
+    this._blobUrl = "";
+    this._token = 0;
+    this._waitTimer = null;
 
     el.vid.addEventListener("ended", () => this.next());
     el.vid.addEventListener("error", () => this.skip("video error"));
     el.ol.addEventListener("click", () => this.openLink());
+
+    // watchdog용: timeupdate가 멈추면(멈춤/검은화면 등) 자가복구 트리거
+    el.vid.addEventListener("timeupdate", () => watchdogTouch(this.name, el.vid.currentTime));
+    el.vid.addEventListener("playing", () => watchdogTouch(this.name, el.vid.currentTime));
+    el.vid.addEventListener("stalled", () => watchdogStall(this.name, "stalled"));
+    el.vid.addEventListener("waiting", () => watchdogStall(this.name, "waiting"));
   }
 
   setList(list) {
@@ -319,6 +901,34 @@ class SimplePlayer {
     else this.el.ol.style.display = "none";
   }
 
+  pauseForSleep() {
+    try { clearTimeout(this.loadTimer); } catch {}
+    try { clearTimeout(this.imgTimer); } catch {}
+    try { clearTimeout(this._waitTimer); } catch {}
+    try { this.el.vid.muted = true; this.el.vid.pause(); } catch {}
+  }
+
+  _meta(type, url) {
+    return {
+      pri: this.name === "LEFT" ? 2 : 1,
+      side: this.name,
+      type: type || (isVideo(url) ? "video" : "image")
+    };
+  }
+
+  async _waitForOnline(reason="") {
+    clearTimeout(this.loadTimer);
+    clearTimeout(this.imgTimer);
+    clearTimeout(this._waitTimer);
+
+    this.showPh(`OFFLINE: 캐시 없음 (동기화 대기)`);
+    // 온라인 복귀 시 자동 재생
+    this._waitTimer = setTimeout(() => {
+      if (NET_STATE.online && !SLEEP_ACTIVE) this.play();
+      else this._waitForOnline(reason);
+    }, 20000);
+  }
+
   play() {
     if (!this.list.length) return this.showPh("콘텐츠 없음");
 
@@ -333,6 +943,7 @@ class SimplePlayer {
 
     clearTimeout(this.loadTimer);
     clearTimeout(this.imgTimer);
+    clearTimeout(this._waitTimer);
 
     this.showPh("불러오는 중…");
 
@@ -340,11 +951,13 @@ class SimplePlayer {
       this.skip("load timeout");
     }, CONFIG.loadTimeoutMs);
 
+    // 다음 콘텐츠 미리 캐시(무중단/오프라인 대비)
+    this.prefetchNext();
+
     if (isVideo(url)) this.playVideo(url);
     else if (isImage(url)) this.playImage(url, duration);
     else this.skip("unknown type");
   }
-
 
   async playVideo(url) {
     clearTimeout(this.imgTimer);
@@ -362,11 +975,14 @@ class SimplePlayer {
     this._token = (this._token || 0) + 1;
     const token = this._token;
 
+    const meta = this._meta("video", url);
+
     // 공통: 준비되면 표시
     this.el.vid.oncanplay = () => {
       clearTimeout(this.loadTimer);
       this.el.ph.style.display = "none";
       this.el.vid.style.display = "block";
+      this.el.vid.muted = false;
       this.el.vid.play().catch(()=>{});
     };
 
@@ -375,22 +991,17 @@ class SimplePlayer {
       this.skip("video error");
     };
 
-    // ✅ 핵심 전략
-    // - 온라인: 즉시 스트리밍(URL 그대로)로 재생(로딩 화면 최소화)
-    //          동시에 백그라운드로 '통째 다운로드'해서 캐시에 저장(오프라인 대비)
-    // - 오프라인: 캐시에 저장된 Response -> blob -> blob URL 로 재생
-    const online = navigator.onLine;
+    const online = !!NET_STATE.online;
 
     if (online) {
       // 1) 즉시 스트리밍 재생 (빠름)
-      this.el.vid.crossOrigin = "anonymous"; // CORS 허용 시 blob/캐시 호환성 ↑
+      this.el.vid.crossOrigin = "anonymous";
       this.el.vid.src = url;
       this.el.vid.load();
 
-      // 2) 동시에 캐시 저장(백그라운드)
-      ensureCached(url).then((ok) => {
-        // 캐시 진행상황은 진단 패널에서 확인 가능
-      }).catch(()=>{});
+      // 2) 동시에 캐시 저장(백그라운드) — 오프라인 대비
+      ensureCached(url, meta).catch(()=>{});
+      try { touchMediaMeta(url, { ...meta, ts: Date.now() }); } catch {}
 
       return;
     }
@@ -398,7 +1009,10 @@ class SimplePlayer {
     // 오프라인이면: 캐시된 blob으로만 재생 가능
     (async () => {
       try {
-        const blobUrl = await getVideoBlobUrlFromCache(url);
+        const hit = await cacheHas(url);
+        if (!hit) return this._waitForOnline("offline no cached video");
+
+        const blobUrl = await getVideoBlobUrlFromCache(url, meta);
 
         // 최신 요청만 살림
         if (token !== this._token) {
@@ -410,14 +1024,14 @@ class SimplePlayer {
         this.el.vid.src = blobUrl;
         this.el.vid.load();
       } catch (e) {
-        // 캐시에 없으면 -> 스킵
-        this.skip("offline no cached video");
+        this._waitForOnline("offline no cached video");
       }
     })();
   }
 
-
   playImage(url, durationSec) {
+    const meta = this._meta("image", url);
+
     // stop video
     this.el.vid.pause();
     this.el.vid.removeAttribute("src");
@@ -426,17 +1040,63 @@ class SimplePlayer {
     this.el.vid.style.display = "none";
     this.el.img.style.display = "none";
 
+    // 오프라인 + 캐시 없음이면 "대기"로 전환(무한 스킵 방지)
+    if (!NET_STATE.online) {
+      cacheHas(url).then((hit) => {
+        if (!hit) return this._waitForOnline("offline no cached image");
+        // 캐시가 있으면 정상 로드 진행
+        this._loadImage(url, durationSec, meta);
+      }).catch(() => this._waitForOnline("offline no cached image"));
+      return;
+    }
+
+    this._loadImage(url, durationSec, meta);
+  }
+
+  _loadImage(url, durationSec, meta) {
     this.el.img.onload = () => {
       clearTimeout(this.loadTimer);
       this.el.ph.style.display = "none";
       this.el.img.style.display = "block";
 
+      try { touchMediaMeta(url, { ...meta, ts: Date.now() }); } catch {}
+
       clearTimeout(this.imgTimer);
       this.imgTimer = setTimeout(() => this.next(), durationSec * 1000);
     };
     this.el.img.onerror = () => this.skip("image error");
-
     this.el.img.src = url;
+
+    // 백그라운드 캐시(온라인일 때)
+    ensureCached(url, meta).catch(()=>{});
+  }
+
+  getNextUrls(n=2) {
+    const out = [];
+    const L = this.list.length;
+    if (!L) return out;
+    for (let k=1; k<=n; k++) {
+      const item = this.list[(this.idx + k) % L];
+      if (item && item.url) out.push(item.url);
+    }
+    return out;
+  }
+
+  prefetchNext() {
+    if (!CONFIG?.enableOfflineCache) return;
+    if (!NET_STATE.online) return;
+
+    const urls = this.getNextUrls(2);
+    if (!urls.length) return;
+
+    const metaMap = {};
+    for (const u of urls) metaMap[u] = this._meta(isVideo(u) ? "video" : "image", u);
+
+    // 가볍게 미리 캐시만(진단용 카운트/정리까지는 updatePlaylists에서)
+    prefetchUrls(urls, metaMap).then(() => {
+      // 상한 관리(오래된 것부터)
+      pruneMediaCache({ keepUrls: collectKeepUrls().concat(urls), maxEntries: CONFIG.cacheMaxEntries || 12 }).catch(()=>{});
+    }).catch(()=>{});
   }
 
   next() {
@@ -445,12 +1105,19 @@ class SimplePlayer {
   }
 
   skip(reason) {
+    // 오프라인 캐시 없음은 watchdog/에러카운트로 잡지 않음(대기 모드로 처리)
+    if (/offline/i.test(reason)) {
+      return this._waitForOnline(reason);
+    }
+
     errorCount += 1;
+    watchdogRecordError(reason);
     console.warn(`[${this.name}] skip: ${reason}`);
     els.dErr.textContent = String(errorCount);
 
     clearTimeout(this.loadTimer);
     clearTimeout(this.imgTimer);
+    clearTimeout(this._waitTimer);
 
     this.idx = (this.idx + 1) % Math.max(this.list.length, 1);
     this.play();
@@ -634,79 +1301,201 @@ function normalizeList(arr, baseUrl) {
     .filter(x => x.url && (isVideo(x.url) || isImage(x.url)));
 }
 
-async function updatePlaylists(reason="manual") {
-  updateDiag();
-
-  const leftKey = "lv_left_playlist";
-  const rightKey = "lv_right_playlist";
-
+function listSignature(list=[]) {
   try {
-    const [l, r] = await Promise.all([
-      safeFetchJson(CONFIG.leftPlaylistUrl),
-      safeFetchJson(CONFIG.rightPlaylistUrl)
-    ]);
+    return JSON.stringify((list||[]).map(x => ({
+      u: x.url || "",
+      d: Number(x.duration) || 0,
+      l: x.link || ""
+    })));
+  } catch { return ""; }
+}
 
-    const leftList = normalizeList(l, CONFIG.leftPlaylistUrl);
-    const rightList = normalizeList(r, CONFIG.rightPlaylistUrl);
+function preflightMedia(url, timeoutMs=6000) {
+  return new Promise((resolve) => {
+    if (!url) return resolve(false);
 
-    leftPlayer.setList(leftList);
-    rightPlayer.setList(rightList);
+    const to = setTimeout(() => cleanup(false), Math.max(500, timeoutMs|0));
 
-    savePlaylistCache(leftKey, leftList);
-    savePlaylistCache(rightKey, rightList);
-
-    localStorage.setItem("lv_last_update", `${nowStr()} (${reason})`);
-    updateDiag();
-
-    // 오프라인 재생을 위해(영상 포함): 현재 플레이리스트의 모든 미디어를 자동 캐시
-    if (CONFIG.enableOfflineCache) {
-      // cacheStrategy:
-      // - prefetch-next: 다음 콘텐츠 몇 개만 먼저 저장(끊김 최소)
-      // - cache-all: 전체를 다 저장(완전 오프라인에 더 유리)
-      let urls = [];
-      if ((CONFIG.cacheStrategy || "prefetch-next") === "cache-all") {
-        urls = [...new Set([...leftList, ...rightList].map(x=>x.url))];
-      } else {
-        if (leftList[0]) urls.push(leftList[0].url);
-        if (leftList[1]) urls.push(leftList[1].url);
-        if (rightList[0]) urls.push(rightList[0].url);
-        if (rightList[1]) urls.push(rightList[1].url);
-        urls = [...new Set(urls)];
-      }
-      // 재생은 바로 시작하고, 캐시는 뒤에서 진행
-      prefetchAllMedia(urls).catch(()=>{});
-    } else {
-      // (옵션) 기존 방식: 일부만 미리 캐시
-      if (CONFIG.cacheStrategy === "prefetch-next") {
-        const urls = [];
-        if (leftList[0]) urls.push(leftList[0].url);
-        if (leftList[1]) urls.push(leftList[1].url);
-        if (rightList[0]) urls.push(rightList[0].url);
-        if (rightList[1]) urls.push(rightList[1].url);
-        await prefetchToSW([...new Set(urls)]);
-      } else if (CONFIG.cacheStrategy === "cache-all") {
-        const urls = [...new Set([...leftList, ...rightList].map(x=>x.url))];
-        await prefetchToSW(urls);
-      }
+    function cleanup(ok) {
+      clearTimeout(to);
+      try { el && el.remove(); } catch {}
+      resolve(!!ok);
     }
 
-    // 재생 시작
-    leftPlayer.play();
-    rightPlayer.play();
+    let el = null;
 
+    // 이미지: 실제 로드 가능 여부 확인
+    if (isImage(url)) {
+      el = new Image();
+      el.onload = () => cleanup(true);
+      el.onerror = () => cleanup(false);
+      el.src = url;
+      return;
+    }
+
+    // 영상: metadata 로드로 확인(실제 재생과 가장 가까움)
+    if (isVideo(url)) {
+      el = document.createElement("video");
+      el.preload = "metadata";
+      el.muted = true;
+      el.playsInline = true;
+      el.onloadedmetadata = () => cleanup(true);
+      el.onerror = () => cleanup(false);
+      el.src = url;
+      try { el.load(); } catch {}
+      return;
+    }
+
+    cleanup(false);
+  });
+}
+
+async function preflightBatch(urls=[], timeoutMs=6000) {
+  const uniq = [...new Set((urls||[]).filter(Boolean))];
+  for (const u of uniq) {
+    const ok = await preflightMedia(u, timeoutMs);
+    if (!ok) return false;
+  }
+  return true;
+}
+
+async function updatePlaylists(reason="") {
+  const when = nowStr();
+  updateNetBadge();
+
+  const leftUrl = resolveUrl(CONFIG.leftPlaylistUrl);
+  const rightUrl = resolveUrl(CONFIG.rightPlaylistUrl);
+
+  // 오프라인이면: 캐시 재생 + 다음 동기화 대기
+  if (!NET_STATE.online) {
+    PENDING_SYNC = true;
+    updateNetBadge();
+
+    const leftCached = loadPlaylistCache("LEFT", []);
+    const rightCached = loadPlaylistCache("RIGHT", []);
+
+    if (leftCached.length) leftPlayer.setList(leftCached);
+    if (rightCached.length) rightPlayer.setList(rightCached);
+
+    if (!SLEEP_ACTIVE) {
+      if (!leftPlayer.currentUrl) leftPlayer.play();
+      if (!rightPlayer.currentUrl) rightPlayer.play();
+    }
+
+    localStorage.setItem("lv_last_update", `${when} (OFFLINE: sync wait)`);
+    updateDiag();
+    return;
+  }
+
+  PENDING_SYNC = false;
+  updateNetBadge();
+
+  try {
+    const [leftJson, rightJson] = await Promise.all([
+      safeFetchJson(leftUrl),
+      safeFetchJson(rightUrl)
+    ]);
+
+    const leftList = normalizeList(leftJson);
+    const rightList = normalizeList(rightJson);
+
+    // playlist가 비었거나 깨졌으면 롤백
+    if (!leftList.length || !rightList.length) {
+      throw new Error("playlist empty");
+    }
+
+    const sigL = listSignature(leftList);
+    const sigR = listSignature(rightList);
+
+    const changed = (sigL !== LAST_SIG.LEFT) || (sigR !== LAST_SIG.RIGHT);
+
+    // 변경 없으면 재시작 없이 타임스탬프만 갱신
+    if (!changed) {
+      localStorage.setItem("lv_last_update", `${when} (no change)`);
+      updateDiag();
+      return;
+    }
+
+    // ✅ 업데이트 안전 반영: 다음 콘텐츠를 먼저 로드 확인 후에만 교체
+    const preUrls = [];
+    for (const it of leftList.slice(0, 2)) if (it?.url) preUrls.push(it.url);
+    for (const it of rightList.slice(0, 2)) if (it?.url) preUrls.push(it.url);
+
+    const preOK = await preflightBatch(preUrls, CONFIG.updatePrefetchTimeoutMs || 6000);
+    if (!preOK) {
+      const haveCache = loadPlaylistCache("LEFT", []).length && loadPlaylistCache("RIGHT", []).length;
+      // 최초 실행 등 캐시가 없는 경우엔 "안전반영"을 완화하여 일단 재생은 하되, 이후 업데이트에서 다시 검증
+      if (haveCache) throw new Error("preflight failed");
+      console.warn("[UPDATE] preflight failed (no cache). applying anyway.");
+    }
+
+    // 적용 + 마지막 정상본 저장
+    leftPlayer.setList(leftList);
+    rightPlayer.setList(rightList);
+    savePlaylistCache("LEFT", leftList);
+    savePlaylistCache("RIGHT", rightList);
+    LAST_SIG.LEFT = sigL;
+    LAST_SIG.RIGHT = sigR;
+
+    // 캐시 전략에 따라 선캐시(오프라인/끊김 방지)
+    if (CONFIG.enableOfflineCache) {
+      let urls = [];
+      const metaMap = {};
+
+      const mark = (u, pri, side) => {
+        if (!u) return;
+        urls.push(u);
+        metaMap[u] = {
+          pri,
+          side,
+          type: isVideo(u) ? "video" : "image"
+        };
+      };
+
+      if (CONFIG.cacheStrategy === "cache-all") {
+        for (const it of leftList) mark(it.url, 2, "LEFT");
+        for (const it of rightList) mark(it.url, 1, "RIGHT");
+      } else {
+        // 기본: 다음 2개씩만 캐시(총 4개 + 현재)
+        for (const it of leftList.slice(0, 2)) mark(it.url, 2, "LEFT");
+        for (const it of rightList.slice(0, 2)) mark(it.url, 1, "RIGHT");
+      }
+
+      urls = [...new Set(urls)].filter(Boolean);
+      await prefetchAllMedia(urls, metaMap);
+    }
+
+    // 재생(무중단에 가깝게: 새 리스트 적용 후 바로)
+    if (!SLEEP_ACTIVE) {
+      leftPlayer.play();
+      rightPlayer.play();
+    }
+
+    localStorage.setItem("lv_last_update", `${when} (${reason || "updated"})`);
+    updateDiag();
   } catch (e) {
-    console.warn("playlist update failed:", e);
+    console.warn("updatePlaylists failed:", e);
 
-    // 실패하면 "기존 캐시/기존 목록 유지"
-    const cachedLeft = loadPlaylistCache(leftKey) || leftPlayer.list;
-    const cachedRight = loadPlaylistCache(rightKey) || rightPlayer.list;
+    // 롤백: 마지막 정상본
+    const leftCached = loadPlaylistCache("LEFT", []);
+    const rightCached = loadPlaylistCache("RIGHT", []);
 
-    if (!cachedLeft?.length) leftPlayer.showPh("LEFT: 업데이트 실패(기존 없음)");
-    else { leftPlayer.setList(cachedLeft); leftPlayer.play(); }
+    if (leftCached.length) {
+      leftPlayer.setList(leftCached);
+      LAST_SIG.LEFT = listSignature(leftCached);
+    }
+    if (rightCached.length) {
+      rightPlayer.setList(rightCached);
+      LAST_SIG.RIGHT = listSignature(rightCached);
+    }
 
-    if (!cachedRight?.length) rightPlayer.showPh("RIGHT: 업데이트 실패(기존 없음)");
-    else { rightPlayer.setList(cachedRight); rightPlayer.play(); }
+    if (!SLEEP_ACTIVE) {
+      if (!leftPlayer.currentUrl) leftPlayer.play();
+      if (!rightPlayer.currentUrl) rightPlayer.play();
+    }
 
+    localStorage.setItem("lv_last_update", `${when} (ROLLBACK)`);
     updateDiag();
   }
 }
@@ -716,10 +1505,26 @@ function setupDiagToggle() {
   let count = 0;
   let timer = null;
 
+
+  // 롱프레스(1.2s)로도 진단 패널 토글 (터치 인식 개선)
+  let holdT = null;
+  const holdStart = () => {
+    clearTimeout(holdT);
+    holdT = setTimeout(() => {
+      els.diag.classList.toggle("open");
+      updateDiag();
+    }, 1200);
+  };
+  const holdEnd = () => { clearTimeout(holdT); };
+  els.hotspot.addEventListener("pointerdown", holdStart);
+  els.hotspot.addEventListener("pointerup", holdEnd);
+  els.hotspot.addEventListener("pointercancel", holdEnd);
+  els.hotspot.addEventListener("pointerleave", holdEnd);
+
   els.hotspot.addEventListener("click", () => {
     count += 1;
     clearTimeout(timer);
-    timer = setTimeout(() => { count = 0; }, 1200);
+    timer = setTimeout(() => { count = 0; }, 2500);
 
     if (count >= 5) {
       els.diag.classList.toggle("open");
@@ -728,8 +1533,22 @@ function setupDiagToggle() {
     }
   });
 
-  window.addEventListener("online", updateDiag);
-  window.addEventListener("offline", updateDiag);
+  window.addEventListener("online", () => {
+    setOnlineState(true, "(event online)");
+    const wasPending = PENDING_SYNC;
+    PENDING_SYNC = false;
+    updateNetBadge();
+    probeOnline();
+    if (wasPending) updatePlaylists("online");
+    updateDiag();
+  });
+
+  window.addEventListener("offline", () => {
+    setOnlineState(false, "(event offline)");
+    PENDING_SYNC = true;
+    updateNetBadge();
+    updateDiag();
+  });
 }
 
 function setupFullscreen() {
@@ -761,11 +1580,14 @@ function setupFullscreen() {
   // ✅ fullscreen/진단은 가장 먼저(초기화 실패해도 버튼은 동작)
   setupDiagToggle();
   setupFullscreen();
+  setupSleepUI();
   updateDiag();
 
   try {
     CONFIG = await loadConfig();
     console.log("CONFIG:", CONFIG);
+    updateNetBadge();
+    setupWatchdog();
 
     await maybeRegisterSW();
     await probeOnline(2000);
