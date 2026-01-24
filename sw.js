@@ -4,7 +4,7 @@
 // - playlist.json만 네트워크 우선(network-first)으로 받아서 즉시 업데이트 반영
 // - 영상(mp4 등)은 서비스워커가 개입하지 않음(206/Range/캐시 이슈 예방)
 
-const STATIC_CACHE = "lv-static-v10"; // ✅ 버전 올려서 업데이트 강제
+const STATIC_CACHE = "lv-static-v12"; // ✅ 버전 올려서 업데이트 강제 // ✅ 버전 올려서 업데이트 강제
 const MEDIA_CACHE  = "lv-media-v3"; // ✅ 미디어 캐시는 유지
 
 self.addEventListener("install", (event) => {
@@ -67,6 +67,34 @@ async function playlistNetworkFirst(req) {
   }
 }
 
+
+
+async function staticNetworkFirst(req) {
+  const cache = await caches.open(STATIC_CACHE);
+  try {
+    const res = await fetch(req, { cache: "no-store" });
+    if (res && res.ok) {
+      cache.put(req, res.clone()).catch(() => {});
+      return res;
+    }
+    const cached = await cache.match(req);
+    if (cached) return cached;
+    return res;
+  } catch {
+    const cached = await cache.match(req);
+    return cached || Response.error();
+  }
+}
+
+function isStaticAsset(req) {
+  // 문서/스크립트/스타일은 업데이트가 자주 일어나므로 network-first로 처리
+  if (req.mode === "navigate") return true;
+  const dest = req.destination;
+  if (dest === "script" || dest === "style" || dest === "document") return true;
+  const u = new URL(req.url);
+  return /\.(html|js|css)(\?|#|$)/i.test(u.pathname) || u.pathname === "/" || u.pathname.endsWith("/index.html");
+}
+
 self.addEventListener("fetch", (event) => {
   const req = event.request;
   if (req.method !== "GET") return;
@@ -98,7 +126,13 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // ✅ 정적 파일(index/app/sw 등): cache-first
+  // ✅ 정적 파일(index/app/sw 등): network-first (배포 후 자동 업데이트)
+  if (isStaticAsset(req)) {
+    event.respondWith(staticNetworkFirst(req));
+    return;
+  }
+
+  // 그 외 요청: cache-first
   event.respondWith((async () => {
     const cache = await caches.open(STATIC_CACHE);
     const cached = await cache.match(req);

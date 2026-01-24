@@ -82,7 +82,7 @@
       border-left:1px solid rgba(255,255,255,0.15);
       transform: translateX(100%);
       transition: transform 180ms ease;
-      z-index:999;
+      z-index: 1250;
       color:#fff;
       font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
       padding:16px;
@@ -115,6 +115,19 @@
       user-select:none;
     }
     .fsbtn:active{ transform: scale(0.98); }
+
+    .diagbtn{
+      padding:10px 12px;
+      border-radius:12px;
+      border:1px solid rgba(255,255,255,0.18);
+      background:rgba(255,255,255,0.08);
+      color:rgba(255,255,255,0.95);
+      font-size:14px;
+      cursor:pointer;
+    }
+    .diagbtn:active{ transform: scale(0.98); }
+    .vBtns{ display:flex; gap:8px; justify-content:flex-end; align-items:center; }
+
 .hotspot {
       position:fixed; top:0; left:0;
       width:60px; height:60px;
@@ -302,7 +315,7 @@
   </div>
 
   <!-- 진단 패널 -->
-  <div class="hotspot" id="hotspot"></div>
+  <div class="hotspot" id="hotspot" tabindex="0" aria-label="진단패널 열기"></div>
   <button class="fsbtn" id="fsBtn" aria-label="전체화면">⛶</button>
   <div class="netDock" id="netDock" aria-hidden="true"><div class="netBadge" id="netBadge">ONLINE</div></div>
   <script>
@@ -331,8 +344,13 @@
     <div class="row"><div class="k">RIGHT 재생</div><div class="v" id="dRight">-</div></div>
     <div class="row"><div class="k">캐시 상태</div><div class="v" id="dCache">-</div></div>
     <div class="row"><div class="k">에러 횟수</div><div class="v" id="dErr">0</div></div>
+    <div class="row"><div class="k">취침 상태</div><div class="v" id="dSleep">-</div></div>
+    <div class="row"><div class="k">취침 제어</div><div class="v vBtns">
+      <button class="diagbtn" id="btnSleepOpen" type="button">설정</button>
+      <button class="diagbtn" id="btnSleepToggle" type="button">즉시ON</button>
+    </div></div>
   </div>
-  <div class="hint">좌상단 5번 터치 → 진단 패널 · 우상단 ⛶ → 전체화면</div>
+  <div class="hint">좌상단 5번 터치(또는 리모컨 OK 7번) → 진단 패널 · 우상단 ⛶ → 전체화면</div>
 
   
   <!-- 취침(블랙/스크린세이버) 설정 진입: 우하단 핫스팟 -->

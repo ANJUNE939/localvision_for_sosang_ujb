@@ -10,6 +10,9 @@ const els = {
   dRight: $("dRight"),
   dErr: $("dErr"),
   dCache: $("dCache"),
+  dSleep: $("dSleep"),
+  btnSleepOpen: $("btnSleepOpen"),
+  btnSleepToggle: $("btnSleepToggle"),
   hotspot: $("hotspot"),
   fsBtn: $("fsBtn"),
   netDock: $("netDock"),
@@ -37,6 +40,7 @@ const STORE_SLEEP = {
 };
 
 let SLEEP_ACTIVE = false;
+let SLEEP_MANUAL = null; // null=auto, true/false=manual override
 let _sleepResolved = { ...DEFAULT_SLEEP, _src: "default" };
 let _sleepEdit = { ...DEFAULT_SLEEP, target: "start" };
 
@@ -202,10 +206,27 @@ function closeSleepPanel() {
   p.setAttribute("aria-hidden", "true");
 }
 
+
+function toggleManualSleep() {
+  // 1회 누르면 "지금 상태 반대로" 수동 적용
+  // 다시 누르면 수동 해제(자동 스케줄로 복귀)
+  if (SLEEP_MANUAL !== null) {
+    SLEEP_MANUAL = null;
+    tickSleep();
+    return;
+  }
+  SLEEP_MANUAL = !SLEEP_ACTIVE;
+  setSleepActive(SLEEP_MANUAL);
+  try { updateDiag(); } catch {}
+}
+
+
 function tickSleep() {
   const store = CONFIG?.store || safeSlug(new URLSearchParams(location.search).get("store"), DEFAULT_STORE);
   _sleepResolved = resolveSleepConfig(store);
-  setSleepActive(isSleepNow(_sleepResolved));
+  const should = (SLEEP_MANUAL !== null) ? SLEEP_MANUAL : isSleepNow(_sleepResolved);
+  setSleepActive(should);
+  try { updateDiag(); } catch {}
 }
 
 function setupSleepUI() {
@@ -313,6 +334,7 @@ function setupSleepUI() {
 
   bind("sleepSave", () => {
     _writeSavedSleep(_sleepEdit);
+    SLEEP_MANUAL = null; // 저장하면 자동 스케줄로 복귀
     closeSleepPanel();
     tickSleep(); // apply immediately
   });
@@ -320,18 +342,19 @@ function setupSleepUI() {
 
   // 프리셋(점주 원터치)
   bind("sleepPresetDefault", () => {
-    _sleepEdit.startMin = 0;          // 00:00
-    _sleepEdit.endMin   = 9*60 + 30;  // 09:30
+    _sleepEdit.start = "00:00";
+    _sleepEdit.end   = "09:30";
     updateSleepUI();
   });
   bind("sleepPresetNight", () => {
-    _sleepEdit.startMin = 4*60;       // 04:00
-    _sleepEdit.endMin   = 14*60;      // 14:00
+    _sleepEdit.start = "04:00";
+    _sleepEdit.end   = "14:00";
     updateSleepUI();
   });
   bind("sleepPresetOff", () => {
-    _sleepEdit.startMin = 0;
-    _sleepEdit.endMin   = 0;          // start==end => OFF
+    // start==end => OFF(취침 비활성)
+    _sleepEdit.start = "00:00";
+    _sleepEdit.end   = "00:00";
     updateSleepUI();
   });
 
@@ -339,12 +362,17 @@ function setupSleepUI() {
   let okCount = 0;
   let okTimer = null;
 
+  const openDiagPanel = () => {
+    try { els.diag.classList.add("open"); } catch {}
+    try { updateDiag(); } catch {}
+  };
+
   const seq = [];
   const pushSeq = (k) => {
     seq.push(k);
     while (seq.length > 4) seq.shift();
     if (seq.join(",") === "ArrowUp,ArrowUp,ArrowDown,ArrowDown") {
-      openSleepPanel();
+      openDiagPanel();
       seq.length = 0;
     }
   };
@@ -354,12 +382,10 @@ function setupSleepUI() {
       okCount++;
       clearTimeout(okTimer);
       okTimer = setTimeout(() => { okCount = 0; }, 2000);
-      if (okCount >= 7) { openSleepPanel(); okCount = 0; }
+      if (okCount >= 7) { openDiagPanel(); okCount = 0; }
     }
     if (["ArrowUp","ArrowDown"].includes(e.key)) pushSeq(e.key);
   });
-
-  // start ticking
   tickSleep();
   setInterval(tickSleep, 10000);
 }
@@ -460,7 +486,7 @@ function setupWatchdog() {
 
 
 const MEDIA_CACHE = "lv-media-v3";
-const STATIC_CACHE = "lv-static-v3";
+const STATIC_CACHE = "lv-static-v12";
 const CACHE_STATE = { total: 0, done: 0, running: false, msg: "-" };
 const NET_STATE = { online: navigator.onLine, lastProbe: null };
 
@@ -995,7 +1021,7 @@ class SimplePlayer {
 
     if (online) {
       // 1) 즉시 스트리밍 재생 (빠름)
-      this.el.vid.crossOrigin = "anonymous";
+      try { this.el.vid.removeAttribute("crossorigin"); } catch {} // CORS 없더라도 재생되게
       this.el.vid.src = url;
       this.el.vid.load();
 
@@ -1149,6 +1175,21 @@ function updateDiag() {
 
   const last = localStorage.getItem("lv_last_update") || "-";
   if (els.dUpdate) els.dUpdate.textContent = last;
+
+  // 취침 상태 표시
+  if (els.dSleep) {
+    const r = _sleepResolved || { start: "00:00", end: "09:30", mode: "black", _src: "-" };
+    const modeLabel = (r.mode === "screensaver") ? "세이버" : "블랙";
+    const manualLabel = (SLEEP_MANUAL === null) ? "자동" : (SLEEP_MANUAL ? "수동ON" : "수동OFF");
+    const onLabel = SLEEP_ACTIVE ? "ON" : "OFF";
+    els.dSleep.textContent = `${onLabel} · ${manualLabel} · ${r.start}~${r.end} · ${modeLabel} · ${r._src}`;
+  }
+
+  // 진단패널 버튼 라벨(리모컨 OK로 조작 가능)
+  if (els.btnSleepToggle) {
+    els.btnSleepToggle.textContent =
+      (SLEEP_MANUAL !== null) ? "수동해제" : (SLEEP_ACTIVE ? "즉시OFF" : "즉시ON");
+  }
 
   if (els.dLeft) els.dLeft.textContent = leftPlayer?.currentUrl || "-";
   if (els.dRight) els.dRight.textContent = rightPlayer?.currentUrl || "-";
@@ -1397,8 +1438,8 @@ async function updatePlaylists(reason="") {
       safeFetchJson(rightUrl)
     ]);
 
-    const leftList = normalizeList(leftJson);
-    const rightList = normalizeList(rightJson);
+    const leftList = normalizeList(leftJson, leftUrl);
+    const rightList = normalizeList(rightJson, rightUrl);
 
     // playlist가 비었거나 깨졌으면 롤백
     if (!leftList.length || !rightList.length) {
@@ -1476,6 +1517,7 @@ async function updatePlaylists(reason="") {
     updateDiag();
   } catch (e) {
     console.warn("updatePlaylists failed:", e);
+    errorCount += 1;
 
     // 롤백: 마지막 정상본
     const leftCached = loadPlaylistCache("LEFT", []);
@@ -1494,6 +1536,11 @@ async function updatePlaylists(reason="") {
       if (!leftPlayer.currentUrl) leftPlayer.play();
       if (!rightPlayer.currentUrl) rightPlayer.play();
     }
+
+
+    // 캐시도 없으면, 화면에 이유를 표시(무한 '로딩 중' 방지)
+    if (!leftCached.length) leftPlayer.showPh("LEFT 로딩 실패 (진단패널 확인)");
+    if (!rightCached.length) rightPlayer.showPh("RIGHT 로딩 실패 (진단패널 확인)");
 
     localStorage.setItem("lv_last_update", `${when} (ROLLBACK)`);
     updateDiag();
@@ -1581,6 +1628,11 @@ function setupFullscreen() {
   setupDiagToggle();
   setupFullscreen();
   setupSleepUI();
+
+  // ✅ 진단패널에서 취침 설정/즉시토글(리모컨 OK로 조작 가능)
+  if (els.btnSleepOpen) els.btnSleepOpen.addEventListener("click", () => { SLEEP_MANUAL = null; openSleepPanel(); });
+  if (els.btnSleepToggle) els.btnSleepToggle.addEventListener("click", () => { toggleManualSleep(); });
+
   updateDiag();
 
   try {
