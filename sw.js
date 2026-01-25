@@ -4,7 +4,7 @@
 // - playlist.json만 네트워크 우선(network-first)으로 받아서 즉시 업데이트 반영
 // - 영상(mp4 등)은 서비스워커가 개입하지 않음(206/Range/캐시 이슈 예방)
 
-const STATIC_CACHE = "lv-static-v13"; // ✅ 버전 올려서 업데이트 강제 // ✅ 버전 올려서 업데이트 강제
+const STATIC_CACHE = "lv-static-v14"; // ✅ 버전 올려서 업데이트 강제 // ✅ 버전 올려서 업데이트 강제
 const MEDIA_CACHE  = "lv-media-v3"; // ✅ 미디어 캐시는 유지
 
 self.addEventListener("install", (event) => {

@@ -117,6 +117,16 @@
     .fsbtn:active{ transform: scale(0.98); }
     .fsbtn{ transition: opacity 180ms ease; }
     .fsbtn.hidden{ opacity:0; pointer-events:none; }
+    /* ===== Fully Kiosk/키오스크 모드: 상단 UI 완전 숨김 =====
+       - 목적: Fully Kiosk에서는 hover/focus가 항상 걸려 '우리업체70/지역소식30' 뱃지와 전체화면 버튼이 계속 보이는 현상 제거
+       - 동작: (1) UA가 FullyKiosk로 보이거나 (2) URL에 kiosk=1 이면 숨김
+    */
+    html.kiosk .badgeWrap,
+    html.kiosk .fsbtn,
+    html.kiosk .hint{
+      display:none !important;
+    }
+
 
     .diagbtn{
       padding:10px 12px;
@@ -294,6 +304,26 @@
     }
 
   </style>
+
+  <script>
+    // ✅ 키오스크 모드 감지 (Fully Kiosk 또는 ?kiosk=1)
+    (function(){
+      try{
+        const p = new URLSearchParams(location.search);
+        const kioskParam = (p.get("kiosk") || "").toLowerCase();
+        const kiosk = ["1","true","on","yes"].includes(kioskParam);
+
+        const ua = navigator.userAgent || "";
+        const isFullyUA = /FullyKiosk|Fully Kiosk|FullyKioskBrowser/i.test(ua);
+
+        if (kiosk || isFullyUA) document.documentElement.classList.add("kiosk");
+
+        // Fully JS Interface가 늦게 붙는 경우 대비
+        setTimeout(()=>{ if (window.fully) document.documentElement.classList.add("kiosk"); }, 0);
+      }catch(e){}
+    })();
+  </script>
+
 </head>
 <body>
   <div class="wrap">

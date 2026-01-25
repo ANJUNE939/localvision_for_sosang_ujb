@@ -21,8 +21,8 @@ const els = {
 };
 
 // ===== Build / Version (v7) =====
-const LV_BUILD = "v7";
-const LV_BUILD_DETAIL = "v7-20260124_020757";
+const LV_BUILD = "v7.2";
+const LV_BUILD_DETAIL = "v7.2-20260125_080725";
 let LV_REMOTE_BUILD = "-";
 let _lvUpdateReloadScheduled = false;
 
@@ -493,7 +493,7 @@ function setupWatchdog() {
 
 
 const MEDIA_CACHE = "lv-media-v3";
-const STATIC_CACHE = "lv-static-v12";
+const STATIC_CACHE = "lv-static-v14";
 const CACHE_STATE = { total: 0, done: 0, running: false, msg: "-" };
 const NET_STATE = { online: navigator.onLine, lastProbe: null };
 
@@ -844,11 +844,11 @@ async function loadConfig() {
     playlistRefreshFallbackMs: numParam(params, "refresh", 3600000),
 
     // (운영용) 매일 새벽 자동 재시작/새로고침
-    // - restart=HH:MM (기본 09:30)
+    // - restart=HH:MM (기본 09:00)
     // - restartMode=auto|reload|fully (기본 auto)
     // - restartJitterSec=0.. (기본 180초, 여러 TV 동시부하 방지)
     // - restartWindowMin=... (기본 60분, 너무 늦게 깨면 오늘은 스킵)
-    dailyRestartTime: params.get("restart") || "09:30",
+    dailyRestartTime: params.get("restart") || "09:00",
     dailyRestartMode: params.get("restartMode") || "auto",
     restartJitterSec: numParam(params, "restartJitterSec", 180),
     restartWindowMin: numParam(params, "restartWindowMin", 60),
@@ -1751,7 +1751,7 @@ function setupVersionWatcher() {
   // 23:30 업데이트 예약
   scheduleDailyUpdate();
 
-  // 03:00(기본) 매일 새벽 재시작/새로고침 예약
+  // (기본) 매일 리스타트 예약
   scheduleDailyRestart();
 
   // ✅ v7: 버전 체크로 무터치 자동 업데이트
