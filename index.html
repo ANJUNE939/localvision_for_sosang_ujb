@@ -55,8 +55,7 @@
       pointer-events:none;
     }
     .badgeWrap:hover .badge,
-    .badgeWrap:active .badge,
-    .badgeWrap:focus .badge {
+    .badgeWrap:active .badge {
       opacity:1;
       transform: translateY(0);
     }
@@ -123,7 +122,8 @@
     */
     html.kiosk .badgeWrap,
     html.kiosk .fsbtn,
-    html.kiosk .hint{
+    html.kiosk .hint,
+    html.kiosk .netDock{
       display:none !important;
     }
 
@@ -306,20 +306,39 @@
   </style>
 
   <script>
-    // ✅ 키오스크 모드 감지 (Fully Kiosk 또는 ?kiosk=1)
+    // ✅ 키오스크(UI 숨김) 모드 감지
+    // - Fully Kiosk Browser에서는 포커스가 자동으로 잡혀 상단 뱃지/버튼이 계속 보일 수 있어, UI를 숨깁니다.
+    // - 조건: (1) URL ?kiosk=1 또는 ?ui=min|0 (2) UA에 Fully 포함 (3) window.fully 인터페이스 감지
     (function(){
       try{
-        const p = new URLSearchParams(location.search);
-        const kioskParam = (p.get("kiosk") || "").toLowerCase();
-        const kiosk = ["1","true","on","yes"].includes(kioskParam);
+        const root = document.documentElement;
+        const params = new URLSearchParams(location.search);
+        const kioskParam = (params.get("kiosk") || "").toLowerCase();
+        const uiParam = (params.get("ui") || "").toLowerCase();
+
+        const kioskOn = ["1","true","on","yes"].includes(kioskParam)
+          || ["0","off","hide","min","minimal","kiosk"].includes(uiParam);
 
         const ua = navigator.userAgent || "";
-        const isFullyUA = /FullyKiosk|Fully Kiosk|FullyKioskBrowser/i.test(ua);
+        const uaFully = /FullyKiosk|Fully Kiosk|FullyKioskBrowser/i.test(ua) || /Fully/i.test(ua);
 
-        if (kiosk || isFullyUA) document.documentElement.classList.add("kiosk");
+        const apply = () => {
+          const hasFully = !!window.fully;
+          if (kioskOn || uaFully || hasFully) root.classList.add("kiosk");
+        };
 
-        // Fully JS Interface가 늦게 붙는 경우 대비
-        setTimeout(()=>{ if (window.fully) document.documentElement.classList.add("kiosk"); }, 0);
+        apply();
+
+        // Fully JS Interface가 뒤늦게 붙는 경우 대비(최대 5초)
+        let tries = 0;
+        const t = setInterval(() => {
+          tries++;
+          if (window.fully) {
+            root.classList.add("kiosk");
+            clearInterval(t);
+          }
+          if (tries > 20) clearInterval(t);
+        }, 250);
       }catch(e){}
     })();
   </script>
@@ -329,7 +348,7 @@
   <div class="wrap">
     <!-- LEFT -->
     <section class="zone left">
-      <div class="badgeWrap" tabindex="0"><div class="badge">우리업체 70%</div></div>
+      <div class="badgeWrap"><div class="badge">우리업체 70%</div></div>
       <div class="placeholder" id="phLeft">로딩 중…</div>
       <img id="imgLeft" alt="" style="display:none;" />
       <video id="vidLeft" autoplay muted playsinline style="display:none;"></video>
@@ -338,7 +357,7 @@
 
     <!-- RIGHT -->
     <section class="zone right">
-      <div class="badgeWrap" tabindex="0"><div class="badge">지역소식 30%</div></div>
+      <div class="badgeWrap"><div class="badge">지역소식 30%</div></div>
       <div class="placeholder" id="phRight">로딩 중…</div>
       <img id="imgRight" alt="" style="display:none;" />
       <video id="vidRight" autoplay muted playsinline style="display:none;"></video>
@@ -357,6 +376,13 @@
       const btn = document.getElementById('fsBtn');
       if(!btn) return;
       try{ btn.dataset.lvFsBound = '1'; }catch(e){}
+
+      // Fully(키오스크)에서는 자체 풀스크린을 쓰므로 버튼을 아예 숨김
+      try{
+        const ua = navigator.userAgent || "";
+        const isFully = document.documentElement.classList.contains('kiosk') || /\bFully\b/i.test(ua) || !!window.fully;
+        if (isFully) { btn.style.display = 'none'; return; }
+      }catch(e){}
 
       let hideTimer = null;
       const updateIcon = ()=>{ btn.textContent = document.fullscreenElement ? "⤢" : "⛶"; };
@@ -421,6 +447,9 @@
     <div class="row"><div class="k">취침 제어</div><div class="v vBtns">
       <button class="diagbtn" id="btnSleepOpen" type="button">설정</button>
       <button class="diagbtn" id="btnSleepToggle" type="button">즉시ON</button>
+    </div></div>
+    <div class="row"><div class="k">새로고침</div><div class="v vBtns">
+      <button class="diagbtn" id="btnReload" type="button">새로고침</button>
     </div></div>
   </div>
   <div class="hint">좌상단 5번 터치(또는 리모컨 OK 7번) → 진단 패널 · 우상단 ⛶ → 전체화면</div>

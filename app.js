@@ -17,12 +17,13 @@ const els = {
   hotspot: $("hotspot"),
   fsBtn: $("fsBtn"),
   netDock: $("netDock"),
-  netBadge: $("netBadge")
+  netBadge: $("netBadge"),
+  btnReload: $("btnReload")
 };
 
 // ===== Build / Version (v7) =====
-const LV_BUILD = "v7.2";
-const LV_BUILD_DETAIL = "v7.2-20260125_080725";
+const LV_BUILD = "v7.3";
+const LV_BUILD_DETAIL = "v7.3-20260126_112559";
 let LV_REMOTE_BUILD = "-";
 let _lvUpdateReloadScheduled = false;
 
@@ -1731,6 +1732,9 @@ function setupVersionWatcher() {
   // ✅ 진단패널에서 취침 설정/즉시토글(리모컨 OK로 조작 가능)
   if (els.btnSleepOpen) els.btnSleepOpen.addEventListener("click", () => { SLEEP_MANUAL = null; openSleepPanel(); });
   if (els.btnSleepToggle) els.btnSleepToggle.addEventListener("click", () => { toggleManualSleep(); });
+
+  // ✅ 진단패널: 수동 새로고침(리모컨으로도 가능)
+  if (els.btnReload) els.btnReload.addEventListener("click", () => { triggerRestartNow("diag_reload"); });
 
   updateDiag();
 
