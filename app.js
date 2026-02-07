@@ -15,15 +15,14 @@ const els = {
   btnSleepOpen: $("btnSleepOpen"),
   btnSleepToggle: $("btnSleepToggle"),
   hotspot: $("hotspot"),
-  fsBtn: $("fsBtn"),
   netDock: $("netDock"),
   netBadge: $("netBadge"),
   btnReload: $("btnReload")
 };
 
 // ===== Build / Version (v7) =====
-const LV_BUILD = "v7.3";
-const LV_BUILD_DETAIL = "v7.3-20260126_112559";
+const LV_BUILD = "v7.3.1";
+const LV_BUILD_DETAIL = "v7.3.1-20260207_111114";
 let LV_REMOTE_BUILD = "-";
 let _lvUpdateReloadScheduled = false;
 
@@ -1617,33 +1616,7 @@ function setupDiagToggle() {
   });
 }
 
-function setupFullscreen() {
-  const btn = els.fsBtn;
-  if (!btn) return;
-  // index.html 인라인 FS 핸들러가 이미 붙어있으면 중복 바인딩 방지
-  if (btn.dataset && btn.dataset.lvFsBound === '1') return;
 
-
-  const updateBtn = () => {
-    btn.textContent = document.fullscreenElement ? "⤢" : "⛶";
-  };
-
-  btn.addEventListener("click", async () => {
-    try {
-      if (!document.fullscreenElement) {
-        await document.documentElement.requestFullscreen();
-      } else {
-        await document.exitFullscreen();
-      }
-    } catch (e) {
-      console.warn("fullscreen failed:", e);
-    }
-    updateBtn();
-  });
-
-  document.addEventListener("fullscreenchange", updateBtn);
-  updateBtn();
-}
 
 
 function setupSWControllerReload() {
@@ -1723,9 +1696,8 @@ function setupVersionWatcher() {
 }
 
 (async function init(){
-  // ✅ fullscreen/진단은 가장 먼저(초기화 실패해도 버튼은 동작)
+  // ✅ 진단은 가장 먼저(초기화 실패해도 동작)
   setupDiagToggle();
-  setupFullscreen();
   setupSleepUI();
   setupSWControllerReload();
 

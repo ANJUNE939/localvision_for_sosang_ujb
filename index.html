@@ -99,29 +99,11 @@
     }
 
     /* 숨김 클릭 영역(좌상단) */
-    
-    /* 전체화면 버튼(우상단) */
-    .fsbtn{
-      position:fixed; top:10px; right:10px;
-      width:44px; height:44px;
-      border-radius:14px;
-      background:rgba(0,0,0,0.45);
-      color:rgba(255,255,255,0.88);
-      border:1px solid rgba(255,255,255,0.14);
-      font-size:18px;
-      z-index:999;
-      cursor:pointer;
-      user-select:none;
-    }
-    .fsbtn:active{ transform: scale(0.98); }
-    .fsbtn{ transition: opacity 180ms ease; }
-    .fsbtn.hidden{ opacity:0; pointer-events:none; }
     /* ===== Fully Kiosk/키오스크 모드: 상단 UI 완전 숨김 =====
        - 목적: Fully Kiosk에서는 hover/focus가 항상 걸려 '우리업체70/지역소식30' 뱃지와 전체화면 버튼이 계속 보이는 현상 제거
        - 동작: (1) UA가 FullyKiosk로 보이거나 (2) URL에 kiosk=1 이면 숨김
     */
     html.kiosk .badgeWrap,
-    html.kiosk .fsbtn,
     html.kiosk .hint,
     html.kiosk .netDock{
       display:none !important;
@@ -367,72 +349,8 @@
 
   <!-- 진단 패널 -->
   <div class="hotspot" id="hotspot" tabindex="0" aria-label="진단패널 열기"></div>
-  <button class="fsbtn" id="fsBtn" aria-label="전체화면">⛶</button>
-  <div class="netDock" id="netDock" aria-hidden="true"><div class="netBadge" id="netBadge">ONLINE</div></div>
-  <script>
-    // fsBtnInline: app.js가 에러로 멈춰도 전체화면 버튼은 동작하게(보험)
-    // v7: 전체화면 진입 후 2.5초 뒤 자동 숨김(우상단 터치/키 입력/마우스 이동 시 다시 표시)
-    (function(){
-      const btn = document.getElementById('fsBtn');
-      if(!btn) return;
-      try{ btn.dataset.lvFsBound = '1'; }catch(e){}
-
-      // Fully(키오스크)에서는 자체 풀스크린을 쓰므로 버튼을 아예 숨김
-      try{
-        const ua = navigator.userAgent || "";
-        const isFully = document.documentElement.classList.contains('kiosk') || /\bFully\b/i.test(ua) || !!window.fully;
-        if (isFully) { btn.style.display = 'none'; return; }
-      }catch(e){}
-
-      let hideTimer = null;
-      const updateIcon = ()=>{ btn.textContent = document.fullscreenElement ? "⤢" : "⛶"; };
-
-      const showBtn = ()=>{ btn.classList.remove('hidden'); };
-      const scheduleHide = ()=>{
-        clearTimeout(hideTimer);
-        if(!document.fullscreenElement) { showBtn(); return; }
-        hideTimer = setTimeout(()=>{ btn.classList.add('hidden'); }, 2500);
-      };
-
-      const revealIfTopRight = (ev)=>{
-        if(!document.fullscreenElement) return;
-        const x = (ev.touches && ev.touches[0] ? ev.touches[0].clientX : ev.clientX);
-        const y = (ev.touches && ev.touches[0] ? ev.touches[0].clientY : ev.clientY);
-        if(x == null || y == null) return;
-        if(x > window.innerWidth - 180 && y < 180){
-          showBtn();
-          scheduleHide();
-        }
-      };
-
-      btn.addEventListener('click', async ()=>{
-        try{
-          if(!document.fullscreenElement) await document.documentElement.requestFullscreen();
-          else await document.exitFullscreen();
-        }catch(e){ console.warn(e); }
-        updateIcon();
-        // 전체화면이면 잠깐 보여주고 숨김 예약
-        showBtn();
-        scheduleHide();
-      });
-
-      document.addEventListener('fullscreenchange', ()=>{
-        updateIcon();
-        showBtn();
-        scheduleHide();
-      });
-
-      // 사용자 액션(리모컨/키/마우스/터치) 시 잠깐 표시
-      window.addEventListener('keydown', ()=>{ if(document.fullscreenElement){ showBtn(); scheduleHide(); } }, {passive:true});
-      window.addEventListener('mousemove', ()=>{ if(document.fullscreenElement){ showBtn(); scheduleHide(); } }, {passive:true});
-      window.addEventListener('touchstart', revealIfTopRight, {passive:true});
-      window.addEventListener('mousedown', revealIfTopRight, {passive:true});
-
-      updateIcon();
-      // 초기 상태: 전체화면이면 숨김 예약
-      scheduleHide();
-    })();
-  </script>
+    <div class="netDock" id="netDock" aria-hidden="true"><div class="netBadge" id="netBadge">ONLINE</div></div>
+  
 
   <div class="diag" id="diag">
     <h3>진단 패널</h3>
