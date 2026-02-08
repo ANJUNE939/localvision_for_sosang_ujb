@@ -5,6 +5,8 @@ const els = {
   right:{ ph: $("phRight"),img: $("imgRight"),vid: $("vidRight"),ol: $("olRight") },
   diag: $("diag"),
   dOnline: $("dOnline"),
+  dTvStatus: $("dTvStatus"),
+  dTvLastSeen: $("dTvLastSeen"),
   dUpdate: $("dUpdate"),
   dBuild: $("dBuild"),
   dLeft: $("dLeft"),
@@ -496,6 +498,111 @@ const MEDIA_CACHE = "lv-media-v3";
 const STATIC_CACHE = "lv-static-v14";
 const CACHE_STATE = { total: 0, done: 0, running: false, msg: "-" };
 const NET_STATE = { online: navigator.onLine, lastProbe: null };
+
+// ===== HEARTBEAT (TV online check) =====
+// 목적: TV(현장)가 1분마다 서버에 "나 켜져있어요" 출석체크를 보내면,
+//      관리자(admin)는 그 기록을 보고 TV가 온라인인지 확인할 수 있습니다.
+//
+// 사용법(URL):
+// - TV 설치용:   ...?store=gobne&leftBase=...&role=tv
+// - 관리자 확인: ...?store=gobne&leftBase=...&role=admin
+// (선택) apiBase를 바꾸고 싶으면 &apiBase=https://localvision-api.kiklekidz.workers.dev
+
+function qp(name, defVal="") {
+  try { return new URLSearchParams(location.search).get(name) || defVal; } catch { return defVal; }
+}
+function getRole() {
+  const r = String(qp("role","tv")).toLowerCase();
+  return (r === "admin") ? "admin" : "tv";
+}
+function getApiBase() {
+  // 기본값: 안준님이 쓰는 Worker API
+  return String(qp("apiBase","https://localvision-api.kiklekidz.workers.dev")).replace(/\/+$/, "");
+}
+function getOrCreateDeviceId(role="tv") {
+  // 기기마다 딱 1번만 만들고 계속 재사용(학생증 번호 같은 것)
+  const key = role === "admin" ? "lv_admin_id_v1" : "lv_tv_id_v1";
+  try {
+    let id = localStorage.getItem(key);
+    if (!id) {
+      const gen = (crypto && crypto.randomUUID) ? crypto.randomUUID() : (Date.now()+"-"+Math.random().toString(16).slice(2));
+      id = (role === "admin" ? "admin-" : "tv-") + gen;
+      localStorage.setItem(key, id);
+    }
+    return id;
+  } catch {
+    return (role === "admin" ? "admin-" : "tv-") + (Date.now()+"");
+  }
+}
+
+const HB_STATE = {
+  role: "tv",
+  deviceId: "-",
+  apiBase: "-",
+  lastSeenTs: 0,
+  online: false
+};
+
+async function sendHeartbeat() {
+  // 와이파이 약해도 재생이 멈추면 안 되니까: 실패해도 조용히 넘어감
+  try {
+    if (!CONFIG?.store) return;
+    const url = `${HB_STATE.apiBase}/heartbeat`;
+    await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        store: CONFIG.store,
+        role: HB_STATE.role,       // tv 또는 admin
+        deviceId: HB_STATE.deviceId,
+        ts: Date.now(),
+        build: (typeof LV_BUILD === "string" ? LV_BUILD : "unknown")
+      }),
+      cache: "no-store"
+    });
+  } catch {}
+}
+
+function fmtKorea(ts) {
+  try { return new Date(ts).toLocaleString("ko-KR"); } catch { return "-"; }
+}
+function fmtAgo(ms) {
+  const s = Math.floor(ms/1000);
+  if (s < 60) return `${s}초 전`;
+  const m = Math.floor(s/60);
+  if (m < 60) return `${m}분 전`;
+  const h = Math.floor(m/60);
+  return `${h}시간 전`;
+}
+
+function renderTvStatus(online, lastSeen) {
+  if (els.dTvStatus) els.dTvStatus.textContent = online ? "ONLINE ✅" : "OFFLINE ❌";
+  if (els.dTvLastSeen) {
+    els.dTvLastSeen.textContent = lastSeen ? `${fmtKorea(lastSeen)} (${fmtAgo(Date.now()-lastSeen)})` : "-";
+  }
+}
+
+async function fetchTvStatusForAdmin() {
+  try {
+    if (HB_STATE.role !== "admin") return;
+    if (!CONFIG?.store) return;
+
+    // 서버에서 store별 tv 마지막 출석을 내려주는 API
+    // 응답 예시: { online:true, lastSeen: 1700000000000, deviceId:"tv-..." }
+    const url = `${HB_STATE.apiBase}/status?store=${encodeURIComponent(CONFIG.store)}&role=tv`;
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) return;
+
+    const data = await res.json();
+    const online = !!data.online;
+    const lastSeen = Number(data.lastSeen || 0);
+
+    HB_STATE.online = online;
+    HB_STATE.lastSeenTs = lastSeen;
+
+    renderTvStatus(online, lastSeen);
+  } catch {}
+}
 
 let PENDING_SYNC = false; // 오프라인이면 "다음 동기화 대기"
 let LAST_SIG = { LEFT: "", RIGHT: "" };
