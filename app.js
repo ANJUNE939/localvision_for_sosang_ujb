@@ -24,7 +24,7 @@ const els = {
 
 // ===== Build / Version (v7) =====
 const LV_BUILD = "v7.3.2";
-const LV_BUILD_DETAIL = "v7.3.2-20260209_131506";
+const LV_BUILD_DETAIL = "v7.3.2-20260209_142456";
 let LV_REMOTE_BUILD = "-";
 let _lvUpdateReloadScheduled = false;
 
@@ -983,10 +983,7 @@ async function loadConfig() {
     versionWatchEnabled: boolParam(params, "verWatch", true),
     versionCheckMs: numParam(params, "verCheckMs", 600000),
     versionReloadJitterSec: numParam(params, "verReloadJitterSec", 30),
-    versionUrl: params.get("verUrl") || "./version.json",
-    // 🔊 사운드(기본 OFF). autoplay 안정화를 위해 기본은 muted로 재생합니다.
-    soundEnabled: boolParam(params, "sound", false),
-    soundSide: (params.get("soundSide") || "LEFT").toUpperCase()
+    versionUrl: params.get("verUrl") || "./version.json"
   };
 }
 
@@ -1006,30 +1003,6 @@ function loadPlaylistCache(key) {
     return JSON.parse(raw)?.data ?? null;
   } catch { return null; }
 }
-
-// ===== Autoplay / Gesture retry =====
-// 일부 TV/브라우저(WebView 포함)에서는 "소리 ON 상태"에서 autoplay가 차단됩니다.
-// 해결: 1) 항상 muted 로 먼저 재생 시도 2) 그래도 실패하면 첫 사용자 입력(pointer/key)에서 재시도.
-const _lvGestureRetrySet = new WeakSet();
-function registerGestureRetry(videoEl){
-  if (!videoEl || _lvGestureRetrySet.has(videoEl)) return;
-  _lvGestureRetrySet.add(videoEl);
-
-  const retry = () => {
-    try {
-      videoEl.muted = true;
-      const p = videoEl.play();
-      if (p && typeof p.catch === "function") p.catch(()=>{});
-    } catch {}
-    window.removeEventListener("pointerdown", retry, true);
-    window.removeEventListener("keydown", retry, true);
-  };
-
-  window.addEventListener("pointerdown", retry, true);
-  window.addEventListener("keydown", retry, true);
-}
-
-
 
 class SimplePlayer {
   constructor(name, el) {
@@ -1051,16 +1024,22 @@ class SimplePlayer {
 
     // watchdog용: timeupdate가 멈추면(멈춤/검은화면 등) 자가복구 트리거
     el.vid.addEventListener("timeupdate", () => watchdogTouch(this.name, el.vid.currentTime));
-    el.vid.addEventListener("playing", () => {
-      watchdogTouch(this.name, el.vid.currentTime);
-      // 사운드 옵션: 지정한 사이드만 재생 중일 때만 unmute
-      try {
-        const side = (CONFIG?.soundSide || "LEFT");
-        if (CONFIG?.soundEnabled && side === this.name) el.vid.muted = false;
-      } catch {}
-    });
-el.vid.addEventListener("stalled", () => watchdogStall(this.name, "stalled"));
+    el.vid.addEventListener("playing", () => watchdogTouch(this.name, el.vid.currentTime));
+    el.vid.addEventListener("stalled", () => watchdogStall(this.name, "stalled"));
     el.vid.addEventListener("waiting", () => watchdogStall(this.name, "waiting"));
+
+    // 일부 TV 브라우저에서 정책/리소스 이슈로 영상이 일시정지되는 경우 자동 복구(무음 고정)
+    el.vid.addEventListener("pause", () => {
+      if (SLEEP_ACTIVE) return;
+      if (!isVideo(this.currentUrl)) return;
+      if (el.vid.ended) return;
+      setTimeout(() => {
+        if (SLEEP_ACTIVE) return;
+        if (!isVideo(this.currentUrl)) return;
+        try { el.vid.muted = true; el.vid.volume = 0; } catch {}
+        el.vid.play().catch(()=>{});
+      }, 200);
+    });
   }
 
   setList(list) {
@@ -1157,21 +1136,46 @@ el.vid.addEventListener("stalled", () => watchdogStall(this.name, "stalled"));
 
     const meta = this._meta("video", url);
 
-    // 공통: 준비되면 표시
+    // 공통: 준비되면 표시 (무음 autoplay 고정)
     this.el.vid.oncanplay = () => {
       clearTimeout(this.loadTimer);
       this.el.ph.style.display = "none";
       this.el.vid.style.display = "block";
 
-      // ✅ autoplay 안정화: "muted 상태"로 먼저 재생 (TV/브라우저 정책 대응)
-      this.el.vid.muted = true;
-      const p = this.el.vid.play();
-      if (p && typeof p.catch === "function") {
-        p.catch(() => {
-          // autoplay가 막히면 첫 사용자 입력에서 재시도
-          registerGestureRetry(this.el.vid);
-        });
-      }
+      // ✅ 소리 기능 완전 제거: 항상 무음으로만 재생(autoplay 안정화)
+      try {
+        this.el.vid.autoplay = true;
+        this.el.vid.muted = true;
+        this.el.vid.volume = 0;
+        this.el.vid.playsInline = true;
+        this.el.vid.setAttribute("muted", "");
+        this.el.vid.setAttribute("playsinline", "");
+        this.el.vid.setAttribute("webkit-playsinline", "");
+      } catch {}
+
+      const tokenLocal = token;
+      const delay = (this.name === "RIGHT") ? 200 : 0; // 일부 TV에서 동시 autoplay 제한 대비
+
+      const tryPlay = (attempt = 0) => {
+        if (tokenLocal !== this._token) return;
+        try { this.el.vid.muted = true; this.el.vid.volume = 0; } catch {}
+
+        const p = this.el.vid.play();
+        if (p && typeof p.catch === "function") {
+          p.catch(() => {
+            if (tokenLocal !== this._token) return;
+
+            // 몇 번 재시도 후에도 실패하면 멈춤 방지 위해 다음 콘텐츠로 넘김
+            if (attempt < 6) {
+              setTimeout(() => tryPlay(attempt + 1), 250 * (attempt + 1));
+            } else {
+              this.skip("autoplay blocked");
+            }
+          });
+        }
+      };
+
+      setTimeout(() => tryPlay(0), delay);
     };
 
     this.el.vid.onerror = () => {
