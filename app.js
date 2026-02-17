@@ -23,7 +23,7 @@ const els = {
 };
 
 // ===== Build / Version (v7) =====
-const LV_BUILD = "v7.3.2";
+const LV_BUILD = "v7.3.3";
 const LV_BUILD_DETAIL = "v7.3.2-20260209_142456";
 let LV_REMOTE_BUILD = "-";
 let _lvUpdateReloadScheduled = false;
@@ -1866,7 +1866,25 @@ function setupVersionWatcher() {
   try {
     CONFIG = await loadConfig();
     console.log("CONFIG:", CONFIG);
-    updateNetBadge();
+    
+    // ===== HEARTBEAT RUN (added in v7.3.3) =====
+    HB_STATE.role = getRole();                 // tv 또는 admin
+    HB_STATE.apiBase = getApiBase();           // 기본: https://localvision-api.kiklekidz.workers.dev
+    HB_STATE.deviceId = getOrCreateDeviceId(HB_STATE.role);
+
+    // admin이면 진단패널을 자동으로 열어서 TV 상태가 바로 보이게 함
+    if (HB_STATE.role === "admin" && els.diag) { try { els.diag.classList.add("open"); } catch {} }
+
+    // 관리자(admin)는 주기적으로 현장 TV 출석을 조회, TV는 주기적으로 출석을 보냄
+    if (HB_STATE.role === "tv") {
+      sendHeartbeat();
+      setInterval(sendHeartbeat, 20000);        // 20초마다 출석
+    } else {
+      fetchTvStatusForAdmin();
+      setInterval(fetchTvStatusForAdmin, 5000); // 5초마다 TV 상태 조회
+    }
+    // ===== /HEARTBEAT RUN =====
+updateNetBadge();
     setupWatchdog();
 
     await maybeRegisterSW();
