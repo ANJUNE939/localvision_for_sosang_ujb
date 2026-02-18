@@ -1,5 +1,5 @@
 {
-  "build": "v7.3.9",
-  "ts": "2026-02-18T15:58:02+09:00",
-  "notes": "Disable blob video playback online by default; disable CacheStorage video caching by default to prevent stutter/frame-skip on TVs; keep image caching/prefetch."
+  "version": 7,
+  "build": "v7.4.2-hold-loading-conditional",
+  "ts": "2026-02-18T16:48:07.073820+09:00"
 }
