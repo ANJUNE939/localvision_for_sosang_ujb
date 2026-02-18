@@ -741,8 +741,16 @@ async function ensureCached(url, meta={}) {
     if (hit) { touchMediaMeta(url, { ...meta, ts: Date.now() }); return true; }
     if (!NET_STATE.online) return false;
 
-    const res = await fetch(url, { cache: "no-store" });
-    if (res && res.ok) {
+    // ✅ CORS가 막혀도(opaque) 미리받기/오프라인재생이 가능하도록 보강
+    let res = null;
+    try {
+      res = await fetch(url, { cache: "no-store" });
+    } catch (e) {
+      try { res = await fetch(url, { cache: "no-store", mode: "no-cors" }); } catch {}
+    }
+
+    // res.ok(200대) 또는 opaque(status 0)도 캐시 저장
+    if (res && (res.ok || res.type === "opaque")) {
       await cachePut(url, res.clone(), meta);
       return true;
     }
@@ -846,8 +854,15 @@ async function getVideoBlobUrl(url, meta={}) {
 
   // 2) 없으면(온라인일 때) 네트워크에서 통째로 받아 캐시에 저장
   if (!res && NET_STATE.online) {
-    const netRes = await fetch(url, { cache: "no-store" });
-    if (netRes && netRes.ok) {
+    // ✅ CORS가 막혀도(opaque) blob 재생 가능하도록 보강
+    let netRes = null;
+    try {
+      netRes = await fetch(url, { cache: "no-store" });
+    } catch (e) {
+      try { netRes = await fetch(url, { cache: "no-store", mode: "no-cors" }); } catch {}
+    }
+
+    if (netRes && (netRes.ok || netRes.type === "opaque")) {
       await cachePut(url, netRes.clone(), { ...(meta||{}), type: "video" });
       res = netRes;
     }
@@ -965,6 +980,12 @@ async function loadConfig() {
 
     // cache 관리(엔트리 수 기준)
     cacheMaxEntries: numParam(params, "cacheMax", 12),
+
+    // ✅ 온라인에서도 "캐시된 영상"은 blob로 재생해서 전환 로딩을 줄임
+    // - video=stream : 기존처럼 항상 스트리밍(기본값 아님)
+    // - video=auto   : 캐시에 있으면 blob, 없으면 스트리밍(권장)
+    // - video=cache  : 캐시에 있으면 blob, 없으면 스트리밍(=auto와 동일하지만 의도 표시)
+    videoMode: (params.get("video") || "auto").toLowerCase(),
 
     // 네트워크 배지(우하단, 호버 시 표시)
     enableNetBadge: boolParam(params, "netBadge", true),
@@ -1186,12 +1207,38 @@ class SimplePlayer {
     const online = !!NET_STATE.online;
 
     if (online) {
-      // 1) 즉시 스트리밍 재생 (빠름)
+      // ✅ 전환 끊김(로딩) 줄이기:
+      // - 온라인이어도 "이미 캐시된 영상"이면 blob로 즉시 재생
+      // - 캐시가 없으면 기존처럼 스트리밍 + 백그라운드 캐시
+      const mode = (CONFIG.videoMode || "auto").toLowerCase();
+      const wantCache = !!CONFIG.enableOfflineCache && mode !== "stream";
+
+      if (wantCache) {
+        try {
+          const hit = await cacheHas(url);
+          if (hit) {
+            const blobUrl = await getVideoBlobUrlFromCache(url, meta);
+
+            // 최신 요청만 살림
+            if (token !== this._token) {
+              try { URL.revokeObjectURL(blobUrl); } catch {}
+              return;
+            }
+            this._blobUrl = blobUrl;
+
+            this.el.vid.src = blobUrl;
+            this.el.vid.load();
+            return;
+          }
+        } catch {}
+      }
+
+      // 1) 스트리밍 재생 (캐시 미스/stream 모드)
       try { this.el.vid.removeAttribute("crossorigin"); } catch {} // CORS 없더라도 재생되게
       this.el.vid.src = url;
       this.el.vid.load();
 
-      // 2) 동시에 캐시 저장(백그라운드) — 오프라인 대비
+      // 2) 동시에 캐시 저장(백그라운드) — 다음 전환/오프라인 대비
       ensureCached(url, meta).catch(()=>{});
       try { touchMediaMeta(url, { ...meta, ts: Date.now() }); } catch {}
 
