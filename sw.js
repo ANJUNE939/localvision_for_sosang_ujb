@@ -10,7 +10,10 @@ const MEDIA_CACHE  = "lv-media-v3"; // ✅ 미디어 캐시는 유지
 self.addEventListener("install", (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(STATIC_CACHE);
-    await cache.addAll(["./", "./index.html", "./app.js", "./sw.js"]);
+    await cache.addAll(["./", "./index.html", "./app.js", "./sw.js", "./loading.jpg"]);
+    // 로딩 이미지는 이미지 캐시에도 넣어 오프라인 첫 부팅에서도 보이게
+    const mcache = await caches.open(MEDIA_CACHE);
+    await mcache.addAll(["./loading.jpg"]);
     self.skipWaiting();
   })());
 });

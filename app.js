@@ -23,7 +23,7 @@ const els = {
 };
 
 // ===== Build / Version (v7) =====
-const LV_BUILD = "v7.3.2";
+const LV_BUILD = "v7.3.3";
 const LV_BUILD_DETAIL = "v7.3.2-20260209_142456";
 let LV_REMOTE_BUILD = "-";
 let _lvUpdateReloadScheduled = false;
@@ -1047,13 +1047,29 @@ class SimplePlayer {
     this.idx = 0;
   }
 
-  showPh(msg) {
+  showLoading() {
+    // 로딩 이미지(placeholder.loading)를 노출
+    this.el.ph.classList.add("loading");
+    this.el.ph.textContent = "";
+    this.el.ph.style.display = "flex";
+    this.el.img.style.display = "none";
+    this.el.vid.style.display = "none";
+    this.el.ol.style.display = "none";
+  }
+
+  showMsg(msg) {
+    // 메시지(OFFLINE/에러 등)는 텍스트로 표시
+    this.el.ph.classList.remove("loading");
     this.el.ph.textContent = msg;
     this.el.ph.style.display = "flex";
     this.el.img.style.display = "none";
     this.el.vid.style.display = "none";
     this.el.ol.style.display = "none";
   }
+
+  // (호환) 기존 코드가 showPh를 호출해도 안전하게 동작
+  showPh(msg) { this.showMsg(msg); }
+
 
   showOverlay(link) {
     if (link && /^https?:\/\//i.test(link)) this.el.ol.style.display = "block";
@@ -1089,7 +1105,7 @@ class SimplePlayer {
   }
 
   play() {
-    if (!this.list.length) return this.showPh("콘텐츠 없음");
+    if (!this.list.length) return this.showMsg("콘텐츠 없음");
 
     const item = this.list[this.idx % this.list.length];
     const url = item.url || "";
@@ -1104,7 +1120,7 @@ class SimplePlayer {
     clearTimeout(this.imgTimer);
     clearTimeout(this._waitTimer);
 
-    this.showPh("불러오는 중…");
+    this.showLoading();
 
     this.loadTimer = setTimeout(() => {
       this.skip("load timeout");
@@ -1139,8 +1155,24 @@ class SimplePlayer {
     // 공통: 준비되면 표시 (무음 autoplay 고정)
     this.el.vid.oncanplay = () => {
       clearTimeout(this.loadTimer);
-      this.el.ph.style.display = "none";
-      this.el.vid.style.display = "block";
+
+      // ✅ '검은 화면/멈춤' 방지:
+      // - canplay 시점엔 아직 프레임이 준비되지 않은 TV가 있어요.
+      // - 실제 재생(playing/timeupdate) 이벤트가 오면 그때 비디오를 노출합니다.
+      const tokenLocal = token;
+      const revealOnce = () => {
+        if (tokenLocal !== this._token) return;
+        this.el.ph.style.display = "none";
+        this.el.vid.style.display = "block";
+      };
+      try {
+        this.el.vid.addEventListener("playing", revealOnce, { once: true });
+        this.el.vid.addEventListener("timeupdate", revealOnce, { once: true });
+      } catch {
+        // 일부 구형 환경
+        this.el.vid.onplaying = revealOnce;
+      }
+
 
       // ✅ 소리 기능 완전 제거: 항상 무음으로만 재생(autoplay 안정화)
       try {
@@ -1153,7 +1185,6 @@ class SimplePlayer {
         this.el.vid.setAttribute("webkit-playsinline", "");
       } catch {}
 
-      const tokenLocal = token;
       const delay = (this.name === "RIGHT") ? 200 : 0; // 일부 TV에서 동시 autoplay 제한 대비
 
       const tryPlay = (attempt = 0) => {
@@ -1710,8 +1741,8 @@ async function updatePlaylists(reason="") {
 
 
     // 캐시도 없으면, 화면에 이유를 표시(무한 '로딩 중' 방지)
-    if (!leftCached.length) leftPlayer.showPh("LEFT 로딩 실패 (진단패널 확인)");
-    if (!rightCached.length) rightPlayer.showPh("RIGHT 로딩 실패 (진단패널 확인)");
+    if (!leftCached.length) leftPlayer.showMsg("LEFT 로딩 실패 (진단패널 확인)");
+    if (!rightCached.length) rightPlayer.showMsg("RIGHT 로딩 실패 (진단패널 확인)");
 
     localStorage.setItem("lv_last_update", `${when} (ROLLBACK)`);
     updateDiag();
