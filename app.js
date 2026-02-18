@@ -41,8 +41,8 @@ const els = {
 };
 
 // ===== Build / Version (v7) =====
-const LV_BUILD = "v7.4.2";
-const LV_BUILD_DETAIL = "v7.4.2-hold-loading-conditional-20260218";
+const LV_BUILD = "v7.4.3-cachekeys-rightbase";
+const LV_BUILD_DETAIL = "v7.4.3-cachekeys-rightbase-20260218";
 let LV_REMOTE_BUILD = "-";
 let _lvUpdateReloadScheduled = false;
 
@@ -658,8 +658,7 @@ async function probeOnline(timeoutMs=2000) {
   try {
     const res = await fetch(CONFIG.leftPlaylistUrl, { cache: "no-store", signal: ctrl.signal });
     clearTimeout(t);
-    if (res.ok) setOnlineState(true, "(probe ok)");
-    else setOnlineState(false, "(probe bad)");
+    setOnlineState(true, "(probe " + res.status + ")");
   } catch {
     clearTimeout(t);
     setOnlineState(false, "(probe fail)");
@@ -893,7 +892,7 @@ const STORE_LEFT_BASE = {
 };
 
 // ✅ 공통 RIGHT(gongtong) 버킷 공개 도메인
-const DEFAULT_RIGHT_BASE = "https://pub-5c242b129bd849fbadd5a54319ea3540.r2.dev";
+const DEFAULT_RIGHT_BASE = "https://pub-c2364f607cc54d6d9efbb3d24cfaec29.r2.dev/stores/_common";
 
 function cleanBase(u="") {
   return String(u || "").trim().replace(/\/+$/, "");
@@ -1036,6 +1035,12 @@ function loadPlaylistCache(key) {
     if (!raw) return null;
     return JSON.parse(raw)?.data ?? null;
   } catch { return null; }
+}
+
+function playlistKey(side){
+  const qsStore = new URLSearchParams(location.search).get("store");
+  const store = (CONFIG && CONFIG.store) ? CONFIG.store : safeSlug(qsStore, DEFAULT_STORE);
+  return `LV_PL_${side}_${store}`;
 }
 
 class SimplePlayer {
@@ -1877,8 +1882,8 @@ async function updatePlaylists(reason="") {
     PENDING_SYNC = true;
     updateNetBadge();
 
-    const leftCached = loadPlaylistCache("LEFT", []);
-    const rightCached = loadPlaylistCache("RIGHT", []);
+    const leftCached = loadPlaylistCache(playlistKey("LEFT")) || [];
+    const rightCached = loadPlaylistCache(playlistKey("RIGHT")) || [];
 
     if (leftCached.length) leftPlayer.setList(leftCached);
     if (rightCached.length) rightPlayer.setList(rightCached);
@@ -1929,7 +1934,7 @@ async function updatePlaylists(reason="") {
 
     const preOK = await preflightBatch(preUrls, CONFIG.updatePrefetchTimeoutMs || 6000);
     if (!preOK) {
-      const haveCache = loadPlaylistCache("LEFT", []).length && loadPlaylistCache("RIGHT", []).length;
+      const haveCache = (loadPlaylistCache(playlistKey("LEFT"))||[]).length && (loadPlaylistCache(playlistKey("RIGHT"))||[]).length;
       // 최초 실행 등 캐시가 없는 경우엔 "안전반영"을 완화하여 일단 재생은 하되, 이후 업데이트에서 다시 검증
       if (haveCache) throw new Error("preflight failed");
       console.warn("[UPDATE] preflight failed (no cache). applying anyway.");
@@ -1938,8 +1943,8 @@ async function updatePlaylists(reason="") {
     // 적용 + 마지막 정상본 저장
     leftPlayer.setList(leftList);
     rightPlayer.setList(rightList);
-    savePlaylistCache("LEFT", leftList);
-    savePlaylistCache("RIGHT", rightList);
+    savePlaylistCache(playlistKey("LEFT"), leftList);
+    savePlaylistCache(playlistKey("RIGHT"), rightList);
     LAST_SIG.LEFT = sigL;
     LAST_SIG.RIGHT = sigR;
 
@@ -1984,8 +1989,8 @@ async function updatePlaylists(reason="") {
     errorCount += 1;
 
     // 롤백: 마지막 정상본
-    const leftCached = loadPlaylistCache("LEFT", []);
-    const rightCached = loadPlaylistCache("RIGHT", []);
+    const leftCached = loadPlaylistCache(playlistKey("LEFT")) || [];
+    const rightCached = loadPlaylistCache(playlistKey("RIGHT")) || [];
 
     if (leftCached.length) {
       leftPlayer.setList(leftCached);
