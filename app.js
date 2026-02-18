@@ -788,6 +788,8 @@ async function pruneMediaCache({ keepUrls=[], maxEntries=12 } = {}) {
 async function prefetchUrls(urls=[], metaMap={}) {
   if (!CONFIG?.enableOfflineCache) return;
   if (!NET_STATE.online) return;
+  if (SLEEP_ACTIVE) return; // sleep: stop background downloads
+
   const uniq = [...new Set(urls)].filter(Boolean);
   if (!uniq.length) return;
 
@@ -800,6 +802,8 @@ async function prefetchUrls(urls=[], metaMap={}) {
 async function prefetchAllMedia(urls=[], metaMap={}) {
   if (!CONFIG?.enableOfflineCache) return;
   if (!NET_STATE.online) return;
+  if (SLEEP_ACTIVE) return; // sleep: stop background downloads
+
 
   const uniq = [...new Set(urls)].filter(Boolean);
   if (!uniq.length) return;
@@ -1048,7 +1052,18 @@ class SimplePlayer {
   }
 
   showLoading() {
-    // 로딩 이미지(placeholder.loading)를 노출
+    // RIGHT 전환 시에만 로딩 이미지(loading.jpg)를 노출
+    // LEFT는 깜빡임/불필요 노출 방지를 위해 "검정 화면"만 유지(로딩 이미지 없음)
+    if (this.name === "LEFT") {
+      this.el.ph.classList.remove("loading");
+      this.el.ph.textContent = "";
+      this.el.ph.style.display = "flex";
+      this.el.img.style.display = "none";
+      this.el.vid.style.display = "none";
+      this.el.ol.style.display = "none";
+      return;
+    }
+
     this.el.ph.classList.add("loading");
     this.el.ph.textContent = "";
     this.el.ph.style.display = "flex";
@@ -1056,6 +1071,7 @@ class SimplePlayer {
     this.el.vid.style.display = "none";
     this.el.ol.style.display = "none";
   }
+
 
   showMsg(msg) {
     // 메시지(OFFLINE/에러 등)는 텍스트로 표시
@@ -1080,7 +1096,16 @@ class SimplePlayer {
     try { clearTimeout(this.loadTimer); } catch {}
     try { clearTimeout(this.imgTimer); } catch {}
     try { clearTimeout(this._waitTimer); } catch {}
-    try { this.el.vid.muted = true; this.el.vid.pause(); } catch {}
+    try {
+      const v = this.el.vid;
+      v.muted = true;
+      v.pause();
+      // ✅ sleep: release decoder/network to reduce long-run overload
+      v.removeAttribute("src");
+      v.src = "";
+      v.load();
+      v.style.display = "none";
+    } catch {}
   }
 
   _meta(type, url) {
@@ -1106,6 +1131,8 @@ class SimplePlayer {
 
   play() {
     if (!this.list.length) return this.showMsg("콘텐츠 없음");
+    if (SLEEP_ACTIVE) return; // sleep: do not start playback
+
 
     const item = this.list[this.idx % this.list.length];
     const url = item.url || "";
