@@ -23,8 +23,8 @@ const els = {
 };
 
 // ===== Build / Version (v7) =====
-const LV_BUILD = "v7.3.5";
-const LV_BUILD_DETAIL = "v7.3.5-20260218_032508";
+const LV_BUILD = "v7.3.6";
+const LV_BUILD_DETAIL = "v7.3.6-20260218_143957";
 let LV_REMOTE_BUILD = "-";
 let _lvUpdateReloadScheduled = false;
 
@@ -742,7 +742,21 @@ function _sleep(ms){ return new Promise(r=>setTimeout(r, ms)); }
 
 // in-memory warm blob URLs for cached videos (seamless switch)
 const VIDEO_BLOB_MAP = new Map(); // url -> {blobUrl, bytes, pri, lastUsed}
-function revokeWarmBlob(url){
+// 현재 재생 중인 blob URL을 prune/revoke로 날려버리면 "영상 첫장면이 끊기거나 중간부터" 같은 증상이 날 수 있음.
+// 그래서 좌/우 플레이어가 '지금 재생 중인 원본 URL'은 항상 보호(pinned)합니다.
+function _pinnedVideoUrls(){
+  const pins = new Set();
+  try { if (typeof leftPlayer !== "undefined" && leftPlayer && isVideo(leftPlayer.currentUrl)) pins.add(leftPlayer.currentUrl); } catch {}
+  try { if (typeof rightPlayer !== "undefined" && rightPlayer && isVideo(rightPlayer.currentUrl)) pins.add(rightPlayer.currentUrl); } catch {}
+  return pins;
+}
+function revokeWarmBlob(url, force=false){
+  try {
+    if (!force) {
+      const pins = _pinnedVideoUrls();
+      if (pins && pins.has(url)) return;
+    }
+  } catch {}
   try {
     const e = VIDEO_BLOB_MAP.get(url);
     if (e && e.blobUrl) { try { URL.revokeObjectURL(e.blobUrl); } catch {} }
@@ -752,19 +766,27 @@ function revokeWarmBlob(url){
 function pruneWarmBlobs(max){
   try {
     const limit = Math.max(0, Number(max ?? (CONFIG?.videoBlobMax || 2)));
+    const pins = _pinnedVideoUrls();
+
     if (limit <= 0) {
-      for (const [u] of VIDEO_BLOB_MAP.entries()) revokeWarmBlob(u);
+      for (const [u] of VIDEO_BLOB_MAP.entries()) {
+        if (pins && pins.has(u)) continue; // 재생 중인 것은 보호
+        revokeWarmBlob(u, true);
+      }
       return;
     }
     if (VIDEO_BLOB_MAP.size <= limit) return;
+
     const arr = [];
-    for (const [u,e] of VIDEO_BLOB_MAP.entries()) {
+    for (const [u, e] of VIDEO_BLOB_MAP.entries()) {
+      if (pins && pins.has(u)) continue; // 재생 중인 것은 후보에서 제외
       arr.push({u, lastUsed: Number(e.lastUsed||0)});
     }
     arr.sort((a,b)=> (a.lastUsed - b.lastUsed));
+
     while (VIDEO_BLOB_MAP.size > limit && arr.length) {
       const v = arr.shift();
-      revokeWarmBlob(v.u);
+      revokeWarmBlob(v.u, true);
     }
   } catch {}
 }
@@ -1304,6 +1326,16 @@ class SimplePlayer {
     // keep previous visual until video is ready (no blank screen)
     this.el.vid.loop = false;
 
+    // reset handlers/state to avoid "starts mid-video" glitches on some Android/TV browsers
+    try {
+      this.el.vid.oncanplay = null;
+      this.el.vid.onloadeddata = null;
+      this.el.vid.onloadedmetadata = null;
+      this.el.vid.onerror = null;
+    } catch {}
+    try { this.el.vid.playbackRate = 1; } catch {}
+    try { this.el.vid.currentTime = 0; } catch {}
+
     // play()가 연속 호출될 수 있어서 토큰으로 최신 요청만 살림
     this._token = (this._token || 0) + 1;
     const token = this._token;
@@ -1319,6 +1351,7 @@ class SimplePlayer {
       clearTimeout(this.loadTimer);
       this.el.ph.style.display = "none";
       this.el.vid.style.display = "block";
+      try { this.el.img.style.display = "none"; } catch {}
 
       // ✅ 소리 기능 완전 제거: 항상 무음으로만 재생(autoplay 안정화)
       try {
@@ -1329,6 +1362,12 @@ class SimplePlayer {
         this.el.vid.setAttribute("muted", "");
         this.el.vid.setAttribute("playsinline", "");
         this.el.vid.setAttribute("webkit-playsinline", "");
+      } catch {}
+
+      // 시작 위치 강제: 일부 TV에서 이전 currentTime 잔상/중간 재생 방지
+      try {
+        if (typeof this.el.vid.fastSeek === "function") this.el.vid.fastSeek(0);
+        else this.el.vid.currentTime = 0;
       } catch {}
 
       const tokenLocal = token;
@@ -1356,9 +1395,11 @@ class SimplePlayer {
       setTimeout(() => tryPlay(0), delay);
     };
 
-    // canplay가 너무 늦는 TV가 있어 loadeddata도 같이 사용
-    this.el.vid.oncanplay = _onReady;
+    // loadedmetadata에서 currentTime=0 강제 + loadeddata(첫 프레임) 기준으로 전환
+    this.el.vid.onloadedmetadata = () => { try { this.el.vid.currentTime = 0; } catch {} };
     this.el.vid.onloadeddata = _onReady;
+    // 일부 TV에서 loadeddata가 누락될 때만 백업
+    this.el.vid.oncanplay = () => { try { setTimeout(_onReady, 0); } catch { _onReady(); } };
 
     this.el.vid.onerror = () => {
       clearTimeout(this.loadTimer);
