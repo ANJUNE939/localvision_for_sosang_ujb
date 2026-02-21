@@ -23,8 +23,8 @@ const els = {
 };
 
 // ===== Build / Version (v7) =====
-const LV_BUILD = "v7.3.6";
-const LV_BUILD_DETAIL = "v7.3.6-20260222_000000";
+const LV_BUILD = "v7.3.8";
+const LV_BUILD_DETAIL = "v7.3.8-20260222_001000";
 let LV_REMOTE_BUILD = "-";
 let _lvUpdateReloadScheduled = false;
 
@@ -171,7 +171,6 @@ function setSleepActive(on) {
       if (els?.left?.ol) els.left.ol.style.display = "none";
       if (els?.right?.ol) els.right.ol.style.display = "none";
     } catch {}
-
   } else {
     shield.classList.remove("on");
     shield.classList.remove("saver");
@@ -565,11 +564,9 @@ async function sendHeartbeat() {
     const url =
       `${HB_STATE.apiBase}/heartbeat?store=${encodeURIComponent(CONFIG.store)}&role=${encodeURIComponent(HB_STATE.role)}&t=${Date.now()}`;
 
-    // no-cors: 응답을 읽지 않지만 요청은 보내짐(브라우저/TV 호환성 좋음)
     fetch(url, { method: "GET", mode: "no-cors", cache: "no-store", keepalive: true }).catch(() => {});
   } catch {}
 }
-
 
 function fmtKorea(ts) {
   try { return new Date(ts).toLocaleString("ko-KR"); } catch { return "-"; }
@@ -611,25 +608,6 @@ async function fetchTvStatusForAdmin() {
     renderTvStatus(online, lastSeen);
   } catch {}
 }
-
-function setupHeartbeat() {
-  try {
-    HB_STATE.role = getRole();
-    HB_STATE.deviceId = getOrCreateDeviceId(HB_STATE.role);
-    HB_STATE.apiBase = String(getApiBase() || "").replace(/\/+$/, "");
-
-    // 즉시 1회 + 3분마다
-    sendHeartbeat();
-    setInterval(sendHeartbeat, 180000);
-
-    // admin 화면일 때는 TV 상태를 주기적으로 조회해서 진단패널에 표시
-    if (HB_STATE.role === "admin") {
-      fetchTvStatusForAdmin();
-      setInterval(fetchTvStatusForAdmin, 10000);
-    }
-  } catch {}
-}
-
 
 let PENDING_SYNC = false; // 오프라인이면 "다음 동기화 대기"
 let LAST_SIG = { LEFT: "", RIGHT: "" };
@@ -1953,9 +1931,6 @@ function setupVersionWatcher() {
     console.log("CONFIG:", CONFIG);
     updateNetBadge();
     setupWatchdog();
-    // ✅ TV 온라인 하트비트(3분)
-    setupHeartbeat();
-
 
     await maybeRegisterSW();
     await probeOnline(2000);

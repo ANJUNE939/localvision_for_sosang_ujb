@@ -3,304 +3,447 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>LocalVision Launcher</title>
+  <title>LocalVision 7:3 Player (Single Layout) — v7.3.8</title>
+  <link rel="preload" as="image" href="./loading.jpg">
   <style>
-    :root{
-      --bg:#05070a;
-      --lime:#c8ff00;
-      --text:#f2f4f8;
+    html, body { margin:0; padding:0; width:100%; height:100%; background:#000; overflow:hidden; }
+    .wrap { width:100vw; height:100vh; display:flex; }
+    .zone { position:relative; height:100vh; background:#000; overflow:hidden; }
+    .left { width:70vw; }
+    .right { width:30vw; border-left: 3px solid rgba(255,255,255,0.12); }
+
+    video, img {
+      width:100%; height:100%;
+      object-fit:cover;
+      position:absolute; inset:0;
+      background:#000;
     }
-    *{box-sizing:border-box;}
-    body{
-      margin:0;
-      background:var(--bg);
-      color:var(--text);
-      font-family:system-ui,-apple-system,"Pretendard","Noto Sans KR",Arial,sans-serif;
-      min-height:100vh;
-      display:flex;
-      justify-content:center;
-      overflow:auto;
+
+    .placeholder {
+      position:absolute; inset:0;
+      display:flex; align-items:center; justify-content:center;
+      color:rgba(255,255,255,0.85);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      font-size:18px;
+      background: radial-gradient(circle at 30% 30%, rgba(255,255,255,0.06), rgba(0,0,0,0.9));
+      z-index:5;
+      text-align:center;
+      padding:24px;
     }
-    .glow{
-      position:fixed; inset:-20%;
-      background:radial-gradient(circle at 50% 40%,
-        rgba(200,255,0,0.20) 0%,
-        rgba(200,255,0,0.08) 25%,
-        rgba(0,0,0,0) 60%);
-      filter:blur(2px);
+
+    /* 로딩 이미지(다음 콘텐츠 전환 시 표시) */
+    .placeholder.loading{
+      background:#000 url("./loading.jpg") center center / contain no-repeat;
+      color:transparent;
+    }
+
+
+    /* 상단 뱃지: 기본 숨김 → 상단(56px)에 마우스 올리면 표시 */
+    .badgeWrap{
+      position:absolute; top:0; left:0; right:0;
+      height:56px;
+      z-index:12;
+      background:transparent;
+      cursor:default;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .badgeWrap:focus{ outline:none; }
+    .badge {
+      position:absolute; top:10px; left:10px;
+      padding:6px 10px; border-radius:999px;
+      background:rgba(0,0,0,0.45);
+      color:rgba(255,255,255,0.75);
+      font-size:12px;
+      user-select:none;
+
+      /* hidden by default */
+      opacity:0;
+      transform: translateY(-4px);
+      transition: opacity 140ms ease, transform 140ms ease;
       pointer-events:none;
     }
-    .wrap{
-      width:min(1200px, 92vw);
-      padding:32px 24px 28px;
-      text-align:center;
-      position:relative;
-      z-index:1;
+    .badgeWrap:hover .badge,
+    .badgeWrap:active .badge {
+      opacity:1;
+      transform: translateY(0);
     }
-    .title-top{font-size:56px;font-weight:800;margin:0;opacity:.92;letter-spacing:-1px;}
-    .title-main{font-size:78px;font-weight:900;margin:10px 0 0;color:var(--lime);letter-spacing:-2px;}
-    .underline{width:min(880px,86vw);height:6px;margin:16px auto 18px;background:var(--lime);opacity:.9;}
-    .sub1{margin:0;font-size:14px;letter-spacing:2px;color:rgba(200,255,0,.55);}
-    .sub2{margin:10px 0 16px;font-size:20px;font-weight:800;opacity:.92;}
 
-    .statusTop{
-      width:min(980px,92vw);
-      margin: 0 auto 16px;
-      display:flex; gap:10px; flex-wrap:wrap;
-      justify-content:center; align-items:center;
-      font-size:13px; color:rgba(255,255,255,.78);
-    }
-    .pill{
-      display:inline-flex; gap:6px; align-items:center;
-      padding:6px 10px; border-radius:999px;
-      border:1px solid rgba(255,255,255,.10);
-      background:rgba(255,255,255,.06);
-      font-weight:900;
-    }
-    .dot{width:9px;height:9px;border-radius:999px;display:inline-block;}
-    .dot.on{background:#24e36f;}
-    .dot.off{background:#ff5252;}
-    .dot.unk{background:#ffcc00;}
-
-    .grid{
-      display:grid;
-      grid-template-columns:repeat(auto-fit, minmax(260px, 1fr));
-      gap:12px;
-      width:min(980px,92vw);
-      margin:0 auto;
-    }
-    .btn{
-      height:98px;
-      border-radius:18px;
-      border:1px solid rgba(200,255,0,.18);
-      background:linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.04));
-      color:var(--text);
+    .overlay {
+      position:absolute; bottom:16px; right:16px;
+      background: rgba(0,0,0,0.55);
+      color:#fff;
+      padding:10px 14px;
+      border-radius:12px;
+      font-size:16px;
       cursor:pointer;
-      display:flex; flex-direction:column;
-      align-items:center; justify-content:center;
-      gap:8px;
-      padding:10px 12px;
-      text-shadow:0 1px 0 rgba(0,0,0,.4);
-      transition:transform .06s ease, border-color .2s ease, background .2s ease;
+      z-index:10;
+      user-select:none;
+      display:none;
     }
-    .btn:hover{
-      border-color:rgba(200,255,0,.35);
-      background:linear-gradient(180deg, rgba(200,255,0,.10), rgba(255,255,255,.05));
-    }
-    .btn:active{transform:scale(.99);}
-    .btnTitle{font-size:26px;font-weight:900;letter-spacing:-.5px;line-height:1.05;}
-    .btnSub{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;}
-    .mini{
-      display:inline-flex;align-items:center;gap:6px;
-      padding:4px 10px;border-radius:999px;
-      background:rgba(255,255,255,.06);
-      border:1px solid rgba(255,255,255,.10);
-      font-size:12px;font-weight:900;
-    }
-    .mini.on{border-color:rgba(36,227,111,.35);}
-    .mini.off{border-color:rgba(255,82,82,.35);}
-    .mini.unk{border-color:rgba(255,204,0,.35);}
 
-    .bar{margin-top:18px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap;}
-    .small{
-      height:54px;border-radius:16px;
-      border:1px solid rgba(255,255,255,.10);
-      background:rgba(255,255,255,.06);
-      color:var(--text);
-      font-size:16px;font-weight:900;
-      cursor:pointer;padding:0 16px;
+    /* 진단 패널 */
+    .diag {
+      position:fixed; top:0; right:0;
+      width:min(420px, 90vw); height:100vh;
+      background:rgba(0,0,0,0.88);
+      border-left:1px solid rgba(255,255,255,0.15);
+      transform: translateX(100%);
+      transition: transform 180ms ease;
+      z-index: 1250;
+      color:#fff;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      padding:16px;
+      box-sizing:border-box;
     }
-    .small.primary{
-      background:rgba(200,255,0,.90);
-      color:#071000;
-      border-color:rgba(200,255,0,.60);
+    .diag.open { transform: translateX(0); }
+    .diag h3 { margin:0 0 12px 0; font-size:16px; }
+    .row { display:flex; justify-content:space-between; gap:12px; padding:8px 0; border-bottom:1px solid rgba(255,255,255,0.08); }
+    .k { color:rgba(255,255,255,0.65); font-size:13px; }
+    .v { color:rgba(255,255,255,0.95); font-size:13px; text-align:right; word-break:break-all; }
+    .hint {
+      position:fixed; bottom:10px; left:10px;
+      color:rgba(255,255,255,0.35); font-size:12px;
+      z-index:998;
     }
-    .meta{margin-top:10px;color:rgba(255,255,255,.55);font-size:12px;}
-    .err{margin-top:14px;color:#ffb4b4;font-size:15px;font-weight:800;white-space:pre-wrap;}
+
+    /* 숨김 클릭 영역(좌상단) */
+    /* ===== Fully Kiosk/키오스크 모드: 상단 UI 완전 숨김 =====
+       - 목적: Fully Kiosk에서는 hover/focus가 항상 걸려 '우리업체70/지역소식30' 뱃지와 전체화면 버튼이 계속 보이는 현상 제거
+       - 동작: (1) UA가 FullyKiosk로 보이거나 (2) URL에 kiosk=1 이면 숨김
+    */
+    html.kiosk .badgeWrap,
+    html.kiosk .hint,
+    html.kiosk .netDock{
+      display:none !important;
+    }
+
+
+    .diagbtn{
+      padding:10px 12px;
+      border-radius:12px;
+      border:1px solid rgba(255,255,255,0.18);
+      background:rgba(255,255,255,0.08);
+      color:rgba(255,255,255,0.95);
+      font-size:14px;
+      cursor:pointer;
+    }
+    .diagbtn:active{ transform: scale(0.98); }
+    .vBtns{ display:flex; gap:8px; justify-content:flex-end; align-items:center; }
+
+.hotspot {
+      position:fixed; top:0; left:0;
+      width:60px; height:60px;
+      z-index:1405;
+      background:transparent;
+    }
+  
+    /* ===== Sleep Mode UI (owner) ===== */
+    .sleep-hotspot{
+      position:fixed; right:0; bottom:0;
+      width:120px; height:120px;
+      z-index:999;
+      background:transparent;
+      touch-action:manipulation;
+      display:none;
+      pointer-events:none;
+    }
+    .sleep-shield{
+      position:fixed; inset:0;
+      z-index:1200;
+      display:none;
+      background:#000;
+      pointer-events:auto; /* block touches while sleeping */
+    }
+    .sleep-shield.on{ display:block; }
+    .sleep-saver{
+      position:absolute; inset:0;
+      display:none;
+      overflow:hidden;
+    }
+    .sleep-shield.saver .sleep-saver{ display:block; }
+    .sleep-saver::before{
+      content:"";
+      position:absolute;
+      width:24px; height:24px;
+      border-radius:999px;
+      background:rgba(255,255,255,0.16);
+      left:10%; top:10%;
+      animation:saverMove 12s linear infinite;
+    }
+    @keyframes saverMove{
+      0%{ transform:translate(0,0); }
+      25%{ transform:translate(70vw,10vh); }
+      50%{ transform:translate(55vw,70vh); }
+      75%{ transform:translate(10vw,55vh); }
+      100%{ transform:translate(0,0); }
+    }
+    .sleep-panel{
+      position:fixed;
+      left:50%; top:50%;
+      transform:translate(-50%,-50%);
+      width:min(720px, 92vw);
+      z-index:1300;
+      background:rgba(18,18,18,0.92);
+      border:1px solid rgba(255,255,255,0.10);
+      border-radius:18px;
+      box-shadow:0 18px 60px rgba(0,0,0,0.55);
+      color:#fff;
+      display:none;
+      font-family: system-ui, -apple-system, "Nanum Gothic", "Pretendard", sans-serif;
+    }
+    .sleep-panel.open{ display:block; }
+    .sp-head{
+      display:flex; align-items:center; justify-content:space-between;
+      padding:16px 18px;
+      border-bottom:1px solid rgba(255,255,255,0.08);
+    }
+    .sp-title{ font-size:18px; font-weight:700; letter-spacing:-0.2px; }
+    .sp-close{
+      background:rgba(255,255,255,0.10);
+      border:1px solid rgba(255,255,255,0.12);
+      color:#fff;
+      border-radius:12px;
+      padding:10px 12px;
+      font-size:14px;
+    }
+    .sp-body{ padding:16px 18px 18px; }
+    .sp-row{
+      display:flex; align-items:center; gap:10px;
+      margin:10px 0;
+      flex-wrap:wrap;
+    }
+    .sp-label{
+      width:64px;
+      color:rgba(255,255,255,0.70);
+      font-size:13px;
+    }
+    .sp-val{
+      min-width:92px;
+      padding:10px 12px;
+      border-radius:12px;
+      background:rgba(255,255,255,0.06);
+      border:1px solid rgba(255,255,255,0.10);
+      font-size:18px;
+      font-weight:800;
+      letter-spacing:0.5px;
+      text-align:center;
+    }
+    .sp-btn{
+      background:rgba(255,255,255,0.10);
+      border:1px solid rgba(255,255,255,0.12);
+      color:#fff;
+      border-radius:12px;
+      padding:10px 12px;
+      font-size:14px;
+      min-width:92px;
+    }
+    .sp-btn.on{
+      outline:2px solid rgba(255,255,255,0.35);
+      background:rgba(255,255,255,0.18);
+    }
+    .sp-adjust .sp-btn{ min-width:110px; }
+    .sp-foot{
+      justify-content:flex-end;
+      margin-top:14px;
+    }
+    .sp-hint{
+      margin-top:10px;
+      font-size:12px;
+      color:rgba(255,255,255,0.55);
+      line-height:1.35;
+    }
+    .sp-btn:focus, .sp-close:focus{
+      outline:2px solid rgba(255,255,255,0.45);
+      outline-offset:2px;
+    }
+    
+  
+    /* network badge (hover to reveal) */
+    .netDock{
+      position:fixed;
+      right:10px;
+      bottom:8px;
+      width:110px;
+      height:18px;
+      z-index:99998;
+      pointer-events:auto;
+      background:transparent;
+    }
+    .netBadge{
+      position:absolute;
+      right:0;
+      bottom:0;
+      padding:2px 8px;
+      border-radius:999px;
+      font-size:11px;
+      letter-spacing:0.2px;
+      color:#fff;
+      background:rgba(0,0,0,0.45);
+      border:1px solid rgba(255,255,255,0.18);
+      opacity:0;
+      transform:translateY(4px);
+      transition:opacity .15s ease, transform .15s ease;
+      user-select:none;
+      pointer-events:none;
+      white-space:nowrap;
+    }
+    .netDock:hover .netBadge,
+    .netDock:focus-within .netBadge{
+      opacity:1;
+      transform:translateY(0);
+    }
+
   </style>
+
+  <script>
+    // ✅ 키오스크(UI 숨김) 모드 감지
+    // - Fully Kiosk Browser에서는 포커스가 자동으로 잡혀 상단 뱃지/버튼이 계속 보일 수 있어, UI를 숨깁니다.
+    // - 조건: (1) URL ?kiosk=1 또는 ?ui=min|0 (2) UA에 Fully 포함 (3) window.fully 인터페이스 감지
+    (function(){
+      try{
+        const root = document.documentElement;
+        const params = new URLSearchParams(location.search);
+        const kioskParam = (params.get("kiosk") || "").toLowerCase();
+        const uiParam = (params.get("ui") || "").toLowerCase();
+
+        const kioskOn = ["1","true","on","yes"].includes(kioskParam)
+          || ["0","off","hide","min","minimal","kiosk"].includes(uiParam);
+
+        const ua = navigator.userAgent || "";
+        const uaFully = /FullyKiosk|Fully Kiosk|FullyKioskBrowser/i.test(ua) || /Fully/i.test(ua);
+
+        const apply = () => {
+          const hasFully = !!window.fully;
+          if (kioskOn || uaFully || hasFully) root.classList.add("kiosk");
+        };
+
+        apply();
+
+        // Fully JS Interface가 뒤늦게 붙는 경우 대비(최대 5초)
+        let tries = 0;
+        const t = setInterval(() => {
+          tries++;
+          if (window.fully) {
+            root.classList.add("kiosk");
+            clearInterval(t);
+          }
+          if (tries > 20) clearInterval(t);
+        }, 250);
+      }catch(e){}
+    })();
+  </script>
+
 </head>
 <body>
-  <div class="glow"></div>
-
   <div class="wrap">
-    <h1 class="title-top">WE ARE</h1>
-    <h2 class="title-main">LOCAL VISION.</h2>
-    <div class="underline"></div>
+    <!-- LEFT -->
+    <section class="zone left">
+      <div class="badgeWrap"><div class="badge">우리업체 70%</div></div>
+      <div class="placeholder loading" id="phLeft"></div>
+      <img id="imgLeft" alt="" style="display:none;" />
+      <video id="vidLeft" autoplay muted playsinline style="display:none;"></video>
+      <div class="overlay" id="olLeft">🔗 자세히 보기</div>
+    </section>
 
-    <p class="sub1">UIJEONGBU LOCAL AD NETWORK</p>
-    <p class="sub2">매장을 선택하면 TV 재생 화면으로 이동합니다</p>
-
-    <div id="statusTop" class="statusTop"></div>
-    <div id="grid" class="grid"></div>
-
-    <div class="bar">
-      <button class="small" onclick="location.replace(location.pathname + '?v=' + Date.now())">강제 새로고침</button>
-      <button class="small" onclick="location.href='./status.html'">상태표(상세)</button>
-      <button class="small" onclick="location.href='./admin_ping.html'">관리자 하트비트</button>
-      <button class="small primary" onclick="location.href='https://localvision-for-sosang-ujb.pages.dev'">테스트 이동</button>
-    </div>
-
-    <div class="meta">
-      로드된 매장: <b id="loadedCount">-</b>개 · 마지막 갱신: <span id="loadedAt">-</span> · 상태 갱신: <span id="statusAt">-</span>
-    </div>
-
-    <div id="err" class="err"></div>
+    <!-- RIGHT -->
+    <section class="zone right">
+      <div class="badgeWrap"><div class="badge">지역소식 30%</div></div>
+      <div class="placeholder loading" id="phRight"></div>
+      <img id="imgRight" alt="" style="display:none;" />
+      <video id="vidRight" autoplay muted playsinline style="display:none;"></video>
+      <div class="overlay" id="olRight">🔗 자세히 보기</div>
+    </section>
   </div>
 
-<script>
-  // ===== 설정 =====
-  const DEFAULT_STATUS_API = 'https://lv-status-api.kiklekidz.workers.dev';
-  const STATUS_API = (new URLSearchParams(location.search).get('statusBase') || DEFAULT_STATUS_API).replace(/\/+$/, '');
-  const REFRESH_MS = 10_000;
+  <!-- 진단 패널 -->
+  <div class="hotspot" id="hotspot" tabindex="0" aria-label="진단패널 열기"></div>
+    <div class="netDock" id="netDock" aria-hidden="true"><div class="netBadge" id="netBadge">ONLINE</div></div>
+  
 
-  // ===== 유틸 =====
-  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, m => ({
-    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'
-  }[m]));
+  <div class="diag" id="diag">
+    <h3>진단 패널</h3>
+    <div class="row"><div class="k">온라인</div><div class="v" id="dOnline">-</div></div>
+    <div class="row"><div class="k">TV 상태</div><div class="v" id="dTvStatus">-</div></div>
+    <div class="row"><div class="k">TV 마지막 출석</div><div class="v" id="dTvLastSeen">-</div></div>
+    <div class="row"><div class="k">마지막 업데이트</div><div class="v" id="dUpdate">-</div></div>
+    <div class="row"><div class="k">빌드</div><div class="v" id="dBuild">-</div></div>
+    <div class="row"><div class="k">LEFT 재생</div><div class="v" id="dLeft">-</div></div>
+    <div class="row"><div class="k">RIGHT 재생</div><div class="v" id="dRight">-</div></div>
+    <div class="row"><div class="k">캐시 상태</div><div class="v" id="dCache">-</div></div>
+    <div class="row"><div class="k">에러 횟수</div><div class="v" id="dErr">0</div></div>
+    <div class="row"><div class="k">취침 상태</div><div class="v" id="dSleep">-</div></div>
+    <div class="row"><div class="k">취침 제어</div><div class="v vBtns">
+      <button class="diagbtn" id="btnSleepOpen" type="button">설정</button>
+      <button class="diagbtn" id="btnSleepToggle" type="button">즉시ON</button>
+    </div></div>
+    <div class="row"><div class="k">새로고침</div><div class="v vBtns">
+      <button class="diagbtn" id="btnReload" type="button">새로고침</button>
+    </div></div>
+  </div>
+  <div class="hint">좌상단 5번 터치(또는 리모컨 OK 7번) → 진단 패널 · 우상단 ⛶ → 전체화면</div>
 
-  function storeFromUrl(url){
-    try{
-      const u = new URL(url, location.href);
-      return (u.searchParams.get('store') || '').trim().toLowerCase();
-    }catch(e){ return ''; }
-  }
+  
+  <!-- 취침(블랙/스크린세이버) 설정 진입: 우하단 핫스팟 -->
+  <div class="sleep-hotspot" id="sleepHotspot" aria-hidden="true"></div>
 
-  function toMs(x){
-    const n = Number(x);
-    return Number.isFinite(n) ? n : null;
-  }
+  <!-- 취침 오버레이 -->
+  <div class="sleep-shield" id="sleepShield" aria-hidden="true">
+    <div class="sleep-saver" id="sleepSaver" aria-hidden="true"></div>
+  </div>
 
-  function calcOnline(lastSeenMs, ttlSec){
-    if(!lastSeenMs) return { state:'MISS', online:false };
-    const ageSec = Math.max(0, Math.floor((Date.now() - lastSeenMs)/1000));
-    const online = ageSec <= ttlSec;
-    return { state: online ? 'ON' : 'OFF', online, ageSec };
-  }
+  <!-- 취침 설정 패널 -->
+  <div class="sleep-panel" id="sleepPanel" aria-hidden="true">
+    <div class="sp-head">
+      <div class="sp-title">취침모드 설정</div>
+      <button class="sp-close" id="sleepClose" type="button">닫기</button>
+    </div>
+    <div class="sp-body">
+      <div class="sp-row">
+        <div class="sp-label">선택</div>
+        <button class="sp-btn" id="sleepSelectStart" type="button">시작</button>
+        <button class="sp-btn" id="sleepSelectEnd" type="button">종료</button>
+      </div>
 
-  async function fetchStatus(role){
-    const url = `${STATUS_API}/status/all?role=${encodeURIComponent(role)}&t=${Date.now()}`;
-    try{
-      const res = await fetch(url, { cache:'no-store' });
-      const data = await res.json().catch(()=>null);
-      if(!data || data.ok !== true) return { ok:false, role, url, ttlSec:120, items:[], err:'bad_json' };
-      return { ok:true, role, url, ttlSec:Number(data.ttlSec||120), items:Array.isArray(data.items)?data.items:[] };
-    }catch(e){
-      return { ok:false, role, url, ttlSec:120, items:[], err:String(e?.message || e) };
-    }
-  }
+      <div class="sp-row">
+        <div class="sp-label">시작</div>
+        <div class="sp-val" id="sleepStartVal">00:00</div>
+        <div class="sp-label">종료</div>
+        <div class="sp-val" id="sleepEndVal">09:30</div>
+      </div>
 
-  function mapByStore(items){
-    const m = new Map();
-    for(const it of (items||[])){
-      const store = String(it.store||'').trim().toLowerCase();
-      if(store) m.set(store, it);
-    }
-    return m;
-  }
+      <div class="sp-row">
+        <div class="sp-label">프리셋</div>
+        <button class="sp-btn" id="sleepPresetDefault" type="button">기본</button>
+        <button class="sp-btn" id="sleepPresetNight" type="button">야간</button>
+        <button class="sp-btn" id="sleepPresetOff" type="button">24시간(OFF)</button>
+      </div>
 
-  function miniPill(label, state){
-    const cls = (state==='ON')?'on':(state==='OFF')?'off':'unk';
-    const dot = (state==='ON')?'on':(state==='OFF')?'off':'unk';
-    const text = (state==='ON')?'ONLINE':(state==='OFF')?'OFFLINE':'미수신';
-    return `<span class="mini ${cls}"><span class="dot ${dot}"></span>${esc(label)} <b>${text}</b></span>`;
-  }
 
-  // ===== 렌더 =====
-  let STORES = [];
+      <div class="sp-row sp-adjust">
+        <button class="sp-btn" id="sleepMinusHour" type="button">-1시간</button>
+        <button class="sp-btn" id="sleepMinus10" type="button">-10분</button>
+        <button class="sp-btn" id="sleepPlus10" type="button">+10분</button>
+        <button class="sp-btn" id="sleepPlusHour" type="button">+1시간</button>
+      </div>
 
-  async function loadStores(){
-    const res = await fetch(`./stores.json?v=${Date.now()}`, { cache:'no-store' });
-    if(!res.ok) throw new Error('stores.json 불러오기 실패: ' + res.status);
-    const stores = await res.json();
-    if(!Array.isArray(stores) || stores.length === 0) throw new Error('stores.json 형식 오류(배열/내용 확인)');
-    STORES = stores.map(s => ({
-      name: s.name || '이름없음',
-      url: s.url,
-      store: (s.store || storeFromUrl(s.url) || '').toLowerCase(),
-    }));
-    document.getElementById('loadedCount').textContent = String(STORES.length);
-    document.getElementById('loadedAt').textContent = new Date().toLocaleString();
-  }
+      <div class="sp-row">
+        <div class="sp-label">화면</div>
+        <button class="sp-btn" id="sleepModeBlack" type="button">블랙</button>
+        <button class="sp-btn" id="sleepModeSaver" type="button">스크린세이버</button>
+      </div>
 
-  function renderTop(tvRes, adRes, tvOnline, adOnline, total){
-    const el = document.getElementById('statusTop');
-    el.innerHTML = `
-      <span class="pill"><span class="dot ${tvRes.ok?'on':'unk'}"></span>TV API: ${tvRes.ok?'OK':'FAIL'}</span>
-      <span class="pill"><span class="dot ${adRes.ok?'on':'unk'}"></span>ADMIN API: ${adRes.ok?'OK':'FAIL'}</span>
-      <span class="pill"><span class="dot on"></span>TV ONLINE ${tvOnline}/${total}</span>
-      <span class="pill"><span class="dot on"></span>ADMIN ONLINE ${adOnline}/${total}</span>
-      <span class="pill">TTL: TV ${tvRes.ttlSec}s / ADMIN ${adRes.ttlSec}s</span>
-    `;
-  }
+      <div class="sp-row sp-foot">
+        <button class="sp-btn" id="sleepReset" type="button">기본값</button>
+        <button class="sp-btn" id="sleepSave" type="button">저장</button>
+      </div>
 
-  function renderGrid(tvMap, adMap, ttlTv, ttlAd){
-    const grid = document.getElementById('grid');
-    grid.innerHTML = '';
+      <div class="sp-hint">
+        진입: <b>우하단 1초 꾹 누르기</b> (손님이 못 건드리게 숨김)<br/>
+        우선순위: URL 파라미터 &gt; 점주 저장값 &gt; STORE_SLEEP(코드) &gt; 기본값(00:00~09:30)
+      </div>
+    </div>
+  </div>
 
-    let tvOnline = 0;
-    let adOnline = 0;
-
-    for(const s of STORES){
-      const tvRec = s.store ? tvMap.get(s.store) : null;
-      const adRec = s.store ? adMap.get(s.store) : null;
-
-      const tv = calcOnline(toMs(tvRec?.lastSeen), ttlTv);
-      const ad = calcOnline(toMs(adRec?.lastSeen), ttlAd);
-
-      if(tv.online) tvOnline++;
-      if(ad.online) adOnline++;
-
-      const btn = document.createElement('button');
-      btn.className = 'btn';
-      btn.onclick = () => location.href = s.url;
-
-      btn.title =
-        `store=${s.store || '(없음)'}\n` +
-        (tvRec ? `TV lastSeen=${tvRec.lastSeenIso || tvRec.lastSeen} ip=${tvRec.ip||''} colo=${tvRec.colo||''}` : 'TV: 미수신') + '\n' +
-        (adRec ? `ADMIN lastSeen=${adRec.lastSeenIso || adRec.lastSeen} ip=${adRec.ip||''} colo=${adRec.colo||''}` : 'ADMIN: 미수신');
-
-      btn.innerHTML = `
-        <div class="btnTitle">${esc(s.name)}</div>
-        <div class="btnSub">
-          ${miniPill('TV', tv.state)}
-          ${miniPill('ADMIN', ad.state)}
-        </div>
-      `;
-      grid.appendChild(btn);
-    }
-
-    return { tvOnline, adOnline, total: STORES.length };
-  }
-
-  async function refresh(){
-    const err = document.getElementById('err');
-    err.textContent = '';
-
-    const [tvRes, adRes] = await Promise.all([fetchStatus('tv'), fetchStatus('admin')]);
-    const tvMap = mapByStore(tvRes.items);
-    const adMap = mapByStore(adRes.items);
-
-    const { tvOnline, adOnline, total } = renderGrid(tvMap, adMap, tvRes.ttlSec, adRes.ttlSec);
-    renderTop(tvRes, adRes, tvOnline, adOnline, total);
-
-    document.getElementById('statusAt').textContent = new Date().toLocaleTimeString();
-
-    const msgs = [];
-    if(!tvRes.ok) msgs.push(`TV 상태 API 실패(CORS/URL 확인)\n${tvRes.url}\n${tvRes.err||''}`);
-    if(!adRes.ok) msgs.push(`ADMIN 상태 API 실패(CORS/URL 확인)\n${adRes.url}\n${adRes.err||''}`);
-    const missingStore = STORES.filter(x => !x.store).map(x => x.name);
-    if(missingStore.length) msgs.push(`⚠️ store 파라미터가 없는 항목: ${missingStore.join(', ')}`);
-    if(msgs.length) err.textContent = msgs.join('\n\n');
-  }
-
-  async function boot(){
-    await loadStores();
-    await refresh();
-  }
-
-  boot().catch(e => document.getElementById('err').textContent = String(e?.message||e));
-  setInterval(refresh, REFRESH_MS);
-</script>
+  <script src="./app.js"></script>
 </body>
 </html>
-
