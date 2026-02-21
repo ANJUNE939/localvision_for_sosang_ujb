@@ -23,8 +23,8 @@ const els = {
 };
 
 // ===== Build / Version (v7) =====
-const LV_BUILD = "v7.3.8";
-const LV_BUILD_DETAIL = "v7.3.8-20260222_001000";
+const LV_BUILD = "v7.3.9";
+const LV_BUILD_DETAIL = "v7.3.9-20260222_020000";
 let LV_REMOTE_BUILD = "-";
 let _lvUpdateReloadScheduled = false;
 
@@ -426,7 +426,6 @@ function watchdogStall(side, why="") {
 function watchdogRecordError(reason="") {
   try {
     if (!CONFIG?.watchdogEnabled) return;
-    if (SLEEP_ACTIVE) return;
     if (/offline/i.test(reason)) return;
 
     const now = Date.now();
@@ -564,7 +563,12 @@ async function sendHeartbeat() {
     const url =
       `${HB_STATE.apiBase}/heartbeat?store=${encodeURIComponent(CONFIG.store)}&role=${encodeURIComponent(HB_STATE.role)}&t=${Date.now()}`;
 
-    fetch(url, { method: "GET", mode: "no-cors", cache: "no-store", keepalive: true }).catch(() => {});
+    fetch(url, { method: "GET", mode: "no-cors", cache: "no-store", keepalive: true }).catch(() => {
+      try {
+        const img = new Image();
+        img.src = url;
+      } catch {}
+    });
   } catch {}
 }
 
@@ -1928,6 +1932,41 @@ function setupVersionWatcher() {
 
   try {
     CONFIG = await loadConfig();
+
+// ===== HEARTBEAT START (TV/Admin online) =====
+// - TV(기본): 3분마다 /heartbeat 로 "출석"을 남김 → 런처에서 ONLINE/OFFLINE 판정
+// - admin(role=admin): (옵션) 특정 store의 TV 상태를 /status 로 조회해 진단패널에 표시
+try {
+  HB_STATE.role = getRole();
+  HB_STATE.apiBase = getApiBase();
+  HB_STATE.deviceId = getOrCreateDeviceId(HB_STATE.role);
+
+  // TV 자신 상태 표기(진단패널)
+  const markSelf = () => {
+    try {
+      HB_STATE.lastSeenTs = Date.now();
+      // tv 역할일 때는 "내가 켜져있음"을 표시
+      if (HB_STATE.role !== "admin") renderTvStatus(true, HB_STATE.lastSeenTs);
+    } catch {}
+  };
+
+  // 즉시 1회
+  sendHeartbeat();
+  markSelf();
+
+  // 3분마다 1회
+  setInterval(() => {
+    sendHeartbeat();
+    markSelf();
+  }, 180000);
+
+  // admin이면: TV 상태를 서버에서 가져와 표기(15초마다)
+  if (HB_STATE.role === "admin") {
+    fetchTvStatusForAdmin();
+    setInterval(fetchTvStatusForAdmin, 15000);
+  }
+} catch {}
+
     console.log("CONFIG:", CONFIG);
     updateNetBadge();
     setupWatchdog();
