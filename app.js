@@ -23,8 +23,8 @@ const els = {
 };
 
 // ===== Build / Version (v7) =====
-const LV_BUILD = "v7.3.3";
-const LV_BUILD_DETAIL = "v7.3.2-20260209_142456";
+const LV_BUILD = "v7.3.6";
+const LV_BUILD_DETAIL = "v7.3.6-20260222_000000";
 let LV_REMOTE_BUILD = "-";
 let _lvUpdateReloadScheduled = false;
 
@@ -161,6 +161,17 @@ function setSleepActive(on) {
     // pause players (reduce load)
     try { leftPlayer.pauseForSleep(); } catch {}
     try { rightPlayer.pauseForSleep(); } catch {}
+    // ✅ 블랙모드 진입 시 '로딩 이미지(loading.jpg)'가 보이는 현상 방지:
+    // - 취침 중에는 placeholder의 loading 클래스를 제거하고 화면을 검정으로 고정합니다.
+    try {
+      if (els?.left?.ph) { els.left.ph.classList.remove("loading"); els.left.ph.style.display = "none"; }
+      if (els?.right?.ph){ els.right.ph.classList.remove("loading"); els.right.ph.style.display = "none"; }
+      if (els?.left?.img) els.left.img.style.display = "none";
+      if (els?.right?.img) els.right.img.style.display = "none";
+      if (els?.left?.ol) els.left.ol.style.display = "none";
+      if (els?.right?.ol) els.right.ol.style.display = "none";
+    } catch {}
+
   } else {
     shield.classList.remove("on");
     shield.classList.remove("saver");
@@ -517,7 +528,7 @@ function getRole() {
 }
 function getApiBase() {
   // 기본값: 안준님이 쓰는 Worker API
-  return String(qp("apiBase","https://localvision-api.kiklekidz.workers.dev")).replace(/\/+$/, "");
+  return String(qp("apiBase","https://lv-heartbeat-api.kiklekidz.workers.dev")).replace(/\/+$/, "");
 }
 function getOrCreateDeviceId(role="tv") {
   // 기기마다 딱 1번만 만들고 계속 재사용(학생증 번호 같은 것)
@@ -544,24 +555,21 @@ const HB_STATE = {
 };
 
 async function sendHeartbeat() {
-  // 와이파이 약해도 재생이 멈추면 안 되니까: 실패해도 조용히 넘어감
+  // ✅ CORS/사전요청(OPTIONS) 문제를 피하기 위해 GET + no-cors로 "핑"만 보냅니다.
+  // - 서버 응답을 읽지 않아도 되므로 안정적입니다.
   try {
     if (!CONFIG?.store) return;
-    const url = `${HB_STATE.apiBase}/heartbeat`;
-    await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        store: CONFIG.store,
-        role: HB_STATE.role,       // tv 또는 admin
-        deviceId: HB_STATE.deviceId,
-        ts: Date.now(),
-        build: (typeof LV_BUILD === "string" ? LV_BUILD : "unknown")
-      }),
-      cache: "no-store"
-    });
+    if (SLEEP_ACTIVE) return; // 취침 중엔 네트워크 작업 중단
+    if (!HB_STATE.apiBase || HB_STATE.apiBase === "-") return;
+
+    const url =
+      `${HB_STATE.apiBase}/heartbeat?store=${encodeURIComponent(CONFIG.store)}&role=${encodeURIComponent(HB_STATE.role)}&t=${Date.now()}`;
+
+    // no-cors: 응답을 읽지 않지만 요청은 보내짐(브라우저/TV 호환성 좋음)
+    fetch(url, { method: "GET", mode: "no-cors", cache: "no-store", keepalive: true }).catch(() => {});
   } catch {}
 }
+
 
 function fmtKorea(ts) {
   try { return new Date(ts).toLocaleString("ko-KR"); } catch { return "-"; }
@@ -603,6 +611,25 @@ async function fetchTvStatusForAdmin() {
     renderTvStatus(online, lastSeen);
   } catch {}
 }
+
+function setupHeartbeat() {
+  try {
+    HB_STATE.role = getRole();
+    HB_STATE.deviceId = getOrCreateDeviceId(HB_STATE.role);
+    HB_STATE.apiBase = String(getApiBase() || "").replace(/\/+$/, "");
+
+    // 즉시 1회 + 3분마다
+    sendHeartbeat();
+    setInterval(sendHeartbeat, 180000);
+
+    // admin 화면일 때는 TV 상태를 주기적으로 조회해서 진단패널에 표시
+    if (HB_STATE.role === "admin") {
+      fetchTvStatusForAdmin();
+      setInterval(fetchTvStatusForAdmin, 10000);
+    }
+  } catch {}
+}
+
 
 let PENDING_SYNC = false; // 오프라인이면 "다음 동기화 대기"
 let LAST_SIG = { LEFT: "", RIGHT: "" };
@@ -1926,6 +1953,9 @@ function setupVersionWatcher() {
     console.log("CONFIG:", CONFIG);
     updateNetBadge();
     setupWatchdog();
+    // ✅ TV 온라인 하트비트(3분)
+    setupHeartbeat();
+
 
     await maybeRegisterSW();
     await probeOnline(2000);
