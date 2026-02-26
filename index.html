@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>LocalVision 7:3 Player (Single Layout) — v7.3.9</title>
+  <title>LocalVision 7:3 Player (Single Layout) — v7.3.12</title>
   <link rel="preload" as="image" href="./loading.jpg">
   <style>
     html, body { margin:0; padding:0; width:100%; height:100%; background:#000; overflow:hidden; }
@@ -310,7 +310,7 @@
           || ["0","off","hide","min","minimal","kiosk"].includes(uiParam);
 
         const ua = navigator.userAgent || "";
-        const uaFully = /FullyKiosk|Fully Kiosk|FullyKioskBrowser/i.test(ua) || /Fully/i.test(ua);
+        const uaFully = /FullyKiosk|Fully Kiosk|FullyKioskBrowser/i.test(ua) || /\bFully\b/i.test(ua);
 
         const apply = () => {
           const hasFully = !!window.fully;
@@ -339,7 +339,7 @@
     <!-- LEFT -->
     <section class="zone left">
       <div class="badgeWrap"><div class="badge">우리업체 70%</div></div>
-      <div class="placeholder loading" id="phLeft"></div>
+      <div class="placeholder" id="phLeft"></div>
       <img id="imgLeft" alt="" style="display:none;" />
       <video id="vidLeft" autoplay muted playsinline style="display:none;"></video>
       <div class="overlay" id="olLeft">🔗 자세히 보기</div>
@@ -380,7 +380,7 @@
       <button class="diagbtn" id="btnReload" type="button">새로고침</button>
     </div></div>
   </div>
-  <div class="hint">좌상단 5번 터치(또는 리모컨 OK 7번) → 진단 패널 · 우상단 ⛶ → 전체화면</div>
+  <div class="hint">좌상단 5번 터치(또는 리모컨 OK 7번) → 진단 패널</div>
 
   
   <!-- 취침(블랙/스크린세이버) 설정 진입: 우하단 핫스팟 -->

@@ -4,7 +4,7 @@
 // - playlist.json만 네트워크 우선(network-first)으로 받아서 즉시 업데이트 반영
 // - 영상(mp4 등)은 서비스워커가 개입하지 않음(206/Range/캐시 이슈 예방)
 
-const STATIC_CACHE = "lv-static-v18"; // ✅ 버전 올려서 업데이트 강제 // ✅ 버전 올려서 업데이트 강제
+const STATIC_CACHE = "lv-static-v19"; // ✅ 버전 올려서 업데이트 강제 // ✅ 버전 올려서 업데이트 강제 // ✅ 버전 올려서 업데이트 강제
 const MEDIA_CACHE  = "lv-media-v3"; // ✅ 미디어 캐시는 유지
 
 self.addEventListener("install", (event) => {
@@ -89,17 +89,20 @@ async function playlistNetworkFirst(req) {
 
 async function staticNetworkFirst(req) {
   const cache = await caches.open(STATIC_CACHE);
+  const isNav = (req.mode === "navigate");
+  const key = isNav ? new Request(new URL("./", self.location).toString(), { method: "GET" }) : req;
+  const matchOpts = isNav ? { ignoreSearch: true } : undefined;
   try {
     const res = await fetch(req, { cache: "no-store" });
     if (res && res.ok) {
-      cache.put(req, res.clone()).catch(() => {});
+      cache.put(key, res.clone()).catch(() => {});
       return res;
     }
-    const cached = await cache.match(req);
+    const cached = await cache.match(key, matchOpts);
     if (cached) return cached;
     return res;
   } catch {
-    const cached = await cache.match(req);
+    const cached = await cache.match(key, matchOpts);
     return cached || Response.error();
   }
 }
