@@ -23,8 +23,8 @@ const els = {
 };
 
 // ===== Build / Version (v7) =====
-const LV_BUILD = "v7.4.0";
-const LV_BUILD_DETAIL = "v7.4.0-20260406_b_preload_blob_hold";
+const LV_BUILD = "v7.3.14";
+const LV_BUILD_DETAIL = "v7.3.14-20260226_141244";
 let LV_REMOTE_BUILD = "-";
 let _lvUpdateReloadScheduled = false;
 
@@ -856,7 +856,6 @@ async function getVideoBlobUrlFromCache(url, meta={}) {
 }
 
 
-
 async function getVideoBlobUrl(url, meta={}) {
   // 1) 캐시에 있으면 캐시에서 blob으로
   let res = await cacheGet(url);
@@ -874,66 +873,6 @@ async function getVideoBlobUrl(url, meta={}) {
   try { touchMediaMeta(url, { ...(meta||{}), ts: Date.now(), type: "video" }); } catch {}
   const blob = await res.blob();
   return URL.createObjectURL(blob);
-}
-
-const VIDEO_PREFETCH = new Map();
-
-async function headContentLength(url) {
-  try {
-    const res = await fetch(url, { method: "HEAD", cache: "no-store" });
-    const len = Number(res.headers.get("content-length") || 0);
-    return Number.isFinite(len) ? len : 0;
-  } catch {
-    return 0;
-  }
-}
-
-async function ensureVideoCached(url, meta={}, opts={}) {
-  if (!url) return false;
-  const cached = await cacheGet(url);
-  if (cached) {
-    try { touchMediaMeta(url, { ...(meta||{}), ts: Date.now(), type: "video" }); } catch {}
-    return true;
-  }
-  if (!CONFIG?.enableOfflineCache) return false;
-  if (!NET_STATE.online) return false;
-
-  const inflight = VIDEO_PREFETCH.get(url);
-  if (inflight) return inflight;
-
-  const maxMB = Math.max(1, Number(opts.maxMB || CONFIG?.videoCacheMaxMB || 80));
-  const maxBytes = maxMB * 1024 * 1024;
-
-  const p = (async () => {
-    try {
-      const size = await headContentLength(url);
-      if (size && size > maxBytes) {
-        console.warn("[VIDEO-CACHE] skip too large:", url, Math.round(size / 1024 / 1024), "MB");
-        return false;
-      }
-
-      const res = await fetch(url, { cache: "no-store" });
-      if (!res || !res.ok) return false;
-
-      const len = Number(res.headers.get("content-length") || 0);
-      if (len && len > maxBytes) {
-        console.warn("[VIDEO-CACHE] skip too large after GET:", url, Math.round(len / 1024 / 1024), "MB");
-        return false;
-      }
-
-      await cachePut(url, res.clone(), { ...(meta||{}), type: "video" });
-      return true;
-    } catch (e) {
-      return false;
-    }
-  })();
-
-  VIDEO_PREFETCH.set(url, p);
-  try {
-    return await p;
-  } finally {
-    VIDEO_PREFETCH.delete(url);
-  }
 }
 
 
@@ -1039,9 +978,6 @@ async function loadConfig() {
 
     enableOfflineCache: boolParam(params, "offline", true),
     cacheStrategy: params.get("cache") || "prefetch-next",
-    videoCacheAhead: Math.max(1, numParam(params, "videoAhead", 1)),
-    videoCacheMaxMB: Math.max(10, numParam(params, "videoMaxMB", 80)),
-    holdPollMs: Math.max(500, numParam(params, "holdPollMs", 1500)),
 
     // cache 관리(엔트리 수 기준)
     cacheMaxEntries: numParam(params, "cacheMax", 12),
@@ -1101,7 +1037,6 @@ function loadPlaylistCache(key, fallback = []) {
   }
 }
 
-
 class SimplePlayer {
   constructor(name, el) {
     this.name = name;
@@ -1115,21 +1050,22 @@ class SimplePlayer {
     this._blobUrl = "";
     this._token = 0;
     this._waitTimer = null;
+
+    // (failover) 콘텐츠가 너무 오래 안 보이면 다음으로 넘기기
     this._playSeq = 0;
     this._blankTimer = null;
-    this._readyPollTimer = null;
 
     el.vid.addEventListener("ended", () => this.next());
     el.vid.addEventListener("error", () => this.skip("video error"));
     el.ol.addEventListener("click", () => this.openLink());
 
-    // watchdog용
+    // watchdog용: timeupdate가 멈추면(멈춤/검은화면 등) 자가복구 트리거
     el.vid.addEventListener("timeupdate", () => watchdogTouch(this.name, el.vid.currentTime));
     el.vid.addEventListener("playing", () => watchdogTouch(this.name, el.vid.currentTime));
     el.vid.addEventListener("stalled", () => watchdogStall(this.name, "stalled"));
     el.vid.addEventListener("waiting", () => watchdogStall(this.name, "waiting"));
 
-    // 무음 고정 자동 복구
+    // 일부 TV 브라우저에서 정책/리소스 이슈로 영상이 일시정지되는 경우 자동 복구(무음 고정)
     el.vid.addEventListener("pause", () => {
       if (SLEEP_ACTIVE) return;
       if (!isVideo(this.currentUrl)) return;
@@ -1145,25 +1081,12 @@ class SimplePlayer {
 
   setList(list) {
     this.list = Array.isArray(list) ? list : [];
-    if (this.idx >= this.list.length) this.idx = 0;
+    this.idx = 0;
   }
 
-  hasVisibleFrame() {
-    return this.el.img.style.display === "block" || this.el.vid.style.display === "block";
-  }
-
-  _clearReadyPoll() {
-    try { if (this._readyPollTimer) clearTimeout(this._readyPollTimer); } catch {}
-    this._readyPollTimer = null;
-  }
-
-  showLoading(force=false) {
-    // force=false 이면, 이미 화면에 보이는 프레임을 유지합니다.
-    if (!force && this.hasVisibleFrame()) {
-      this.el.ph.style.display = "none";
-      return;
-    }
-
+  showLoading() {
+    // RIGHT 전환 시에만 로딩 이미지(loading.jpg)를 노출
+    // LEFT는 깜빡임/불필요 노출 방지를 위해 "검정 화면"만 유지(로딩 이미지 없음)
     if (this.name === "LEFT") {
       this.el.ph.classList.remove("loading");
       this.el.ph.textContent = "";
@@ -1182,9 +1105,10 @@ class SimplePlayer {
     this.el.ol.style.display = "none";
   }
 
-  showMsg(msg, force=true) {
+
+  showMsg(msg) {
     this._clearBlankTimer();
-    if (!force && this.hasVisibleFrame()) return;
+    // 메시지(OFFLINE/에러 등)는 텍스트로 표시
     this.el.ph.classList.remove("loading");
     this.el.ph.textContent = msg;
     this.el.ph.style.display = "flex";
@@ -1193,7 +1117,7 @@ class SimplePlayer {
     this.el.ol.style.display = "none";
   }
 
-  // (호환)
+  // (호환) 기존 코드가 showPh를 호출해도 안전하게 동작
   showPh(msg) { this.showMsg(msg); }
 
   _clearBlankTimer() {
@@ -1214,12 +1138,15 @@ class SimplePlayer {
         const imgOn = this.el.img.style.display === "block";
         const vidOn = this.el.vid.style.display === "block";
         const phHidden = (this.el.ph.style.display === "none");
-        if (phHidden && (imgOn || vidOn)) return;
+        if (phHidden && (imgOn || vidOn)) return; // 실제 콘텐츠가 화면에 보임
 
+        // 10초 이상 아무 것도 안 나오면 다음 콘텐츠로
         this.skip("blank timeout");
       } catch {}
     }, ms);
   }
+
+
 
   showOverlay(link) {
     if (link && /^https?:\/\//i.test(link)) this.el.ol.style.display = "block";
@@ -1228,7 +1155,6 @@ class SimplePlayer {
 
   pauseForSleep() {
     this._clearBlankTimer();
-    this._clearReadyPoll();
     try { clearTimeout(this.loadTimer); } catch {}
     try { clearTimeout(this.imgTimer); } catch {}
     try { clearTimeout(this._waitTimer); } catch {}
@@ -1236,6 +1162,7 @@ class SimplePlayer {
       const v = this.el.vid;
       v.muted = true;
       v.pause();
+      // ✅ sleep: release decoder/network to reduce long-run overload
       v.removeAttribute("src");
       v.src = "";
       v.load();
@@ -1253,57 +1180,42 @@ class SimplePlayer {
 
   async _waitForOnline(reason="") {
     this._clearBlankTimer();
-    this._clearReadyPoll();
     clearTimeout(this.loadTimer);
     clearTimeout(this.imgTimer);
     clearTimeout(this._waitTimer);
 
-    if (!this.hasVisibleFrame()) {
-      this.showPh(`OFFLINE: 캐시 없음 (동기화 대기)`);
-    }
-
+    this.showPh(`OFFLINE: 캐시 없음 (동기화 대기)`);
+    // 온라인 복귀 시 자동 재생
     this._waitTimer = setTimeout(() => {
       if (NET_STATE.online && !SLEEP_ACTIVE) this.play();
       else this._waitForOnline(reason);
     }, 20000);
   }
 
-  getCurrentItem() {
-    return this.list[this.idx % Math.max(this.list.length, 1)] || null;
-  }
-
   play() {
     if (!this.list.length) return this.showMsg("콘텐츠 없음");
-    if (SLEEP_ACTIVE) return;
+    if (SLEEP_ACTIVE) return; // sleep: do not start playback
 
     this._playSeq = (this._playSeq || 0) + 1;
+    const seq = this._playSeq;
     this._clearBlankTimer();
-    this._clearReadyPoll();
 
-    clearTimeout(this.loadTimer);
-    clearTimeout(this.imgTimer);
-    clearTimeout(this._waitTimer);
 
-    const item = this.getCurrentItem();
-    if (!item || !item.url) return this.skip("empty item");
-
+    const item = this.list[this.idx % this.list.length];
     const url = item.url || "";
+    const link = item.link || "";
+    const duration = Number(item.duration) || CONFIG.imageDurationSecDefault;
 
-    // 동시 영상 디코더 보호: RIGHT는 LEFT 영상 재생 중이면 비디오를 피함
+    // ✅ TV 스틱 디코더 한계 보호: LEFT/RIGHT 동시 영상 재생을 피함(우선 LEFT)
     try {
       if (isVideo(url) && this.name === "RIGHT") {
         const other = leftPlayer;
         const otherVid = other?.el?.vid;
-        const otherVideoPlaying = !!(
-          other &&
-          isVideo(other.currentUrl) &&
-          otherVid &&
-          otherVid.style.display === "block" &&
-          !otherVid.paused
-        );
+        const otherVideoPlaying = !!(other && isVideo(other.currentUrl) && otherVid && otherVid.style.display === "block" && !otherVid.paused);
         if (otherVideoPlaying) {
+          // RIGHT는 영상 대신 다음 '비디오가 아닌' 콘텐츠로 넘어감(없으면 잠시 대기)
           let found = -1;
-          for (let k = 1; k <= this.list.length; k++) {
+          for (let k=1; k<=this.list.length; k++) {
             const cand = this.list[(this.idx + k) % this.list.length];
             if (cand && cand.url && !isVideo(cand.url)) { found = (this.idx + k) % this.list.length; break; }
           }
@@ -1311,250 +1223,308 @@ class SimplePlayer {
             this.idx = found;
             return this.play();
           }
-          if (!this.hasVisibleFrame()) this.showLoading(true);
+          // 전부 비디오면: 로딩(브랜드) 유지 + 5초 후 재시도
+          this.showLoading();
+          clearTimeout(this.loadTimer);
+          clearTimeout(this.imgTimer);
+          clearTimeout(this._waitTimer);
           this._waitTimer = setTimeout(() => { if (!SLEEP_ACTIVE) this.play(); }, 5000);
           return;
         }
       }
+      // LEFT가 영상 재생을 시작하려는데 RIGHT가 영상 재생 중이면 RIGHT를 잠깐 멈춰 리소스 회수
+      if (isVideo(url) && this.name === "LEFT") {
+        const o = rightPlayer;
+        const ov = o?.el?.vid;
+        if (o && isVideo(o.currentUrl) && ov && ov.style.display === "block" && !ov.paused) {
+          try { ov.pause(); } catch {}
+        }
+      }
     } catch {}
+
+    this.currentUrl = url;
+    this.currentLink = link;
+    this.showOverlay(link);
+
+    clearTimeout(this.loadTimer);
+    clearTimeout(this.imgTimer);
+    clearTimeout(this._waitTimer);
+
+    this.showLoading();
+
+    // failover: 10초 이상 실제 콘텐츠가 안 나오면 다음 콘텐츠로
+    this._startBlankTimer(seq);
 
     this.loadTimer = setTimeout(() => {
       this.skip("load timeout");
     }, CONFIG.loadTimeoutMs);
 
-    this.prefetchNext().catch(()=>{});
+    // 다음 콘텐츠 미리 캐시(무중단/오프라인 대비)
+    this.prefetchNext();
 
-    if (isVideo(url)) return this.playVideo(item);
-    if (isImage(url)) return this.playImage(item);
-    return this.skip("unknown type");
+    if (isVideo(url)) this.playVideo(url);
+    else if (isImage(url)) this.playImage(url, duration);
+    else this.skip("unknown type");
   }
 
-  playImage(item) {
-    const url = item.url || "";
-    const link = item.link || "";
-    const duration = Number(item.duration) || CONFIG.imageDurationSecDefault;
-    const meta = this._meta("image", url);
-    const hadFrame = this.hasVisibleFrame();
+  async playVideo(url) {
+    clearTimeout(this.imgTimer);
 
-    if (!hadFrame) this.showLoading(true);
+    // stop image
+    this.el.img.style.display = "none";
+    this.el.vid.style.display = "none";
+    this.el.vid.loop = false;
 
-    const pre = new Image();
-    pre.onload = () => {
+    // 이전 blob URL 해제
+    if (this._blobUrl) {
+      try { URL.revokeObjectURL(this._blobUrl); } catch {}
+      this._blobUrl = "";
+    }
+
+    // play()가 연속 호출될 수 있어서 토큰으로 최신 요청만 살림
+    this._token = (this._token || 0) + 1;
+    const tokenLocal = this._token;
+
+    const v = this.el.vid;
+
+    // (중요) HTML에 autoplay 속성이 있어도, 여기서는 수동 재생만 사용
+    try { v.autoplay = false; v.removeAttribute("autoplay"); } catch {}
+
+    // 항상 무음(autoplay 안정화)
+    try {
+      v.muted = true;
+      v.volume = 0;
+      v.playsInline = true;
+      v.setAttribute("muted", "");
+      v.setAttribute("playsinline", "");
+      v.setAttribute("webkit-playsinline", "");
+    } catch {}
+
+    // 핸들러 초기화(중복 방지)
+    v.onloadedmetadata = null;
+    v.onloadeddata = null;
+    v.oncanplay = null;
+    v.onerror = null;
+
+    let revealed = false;
+
+    const forceStartZero = () => {
+      try {
+        if (v.readyState >= 1) v.currentTime = 0;
+      } catch {}
+    };
+
+    const hidePlaceholder = () => {
+      try {
+        if (tokenLocal !== this._token) return;
+        this.el.ph.style.display = "none";
+        this._clearBlankTimer();
+      } catch {}
+    };
+
+    const armHideOnFrame = () => {
+      try {
+        if (tokenLocal !== this._token) return;
+
+        // RIGHT: 로딩 이미지를 "첫 프레임이 실제로 찍힐 때까지" 유지(검정 화면 깜빡임 방지)
+        if (this.name === "RIGHT") {
+          if (typeof v.requestVideoFrameCallback === "function") {
+            v.requestVideoFrameCallback(() => hidePlaceholder());
+            return;
+          }
+          const onTU = () => {
+            if (tokenLocal !== this._token) return;
+            if (!v.paused && v.currentTime > 0) {
+              v.removeEventListener("timeupdate", onTU);
+              hidePlaceholder();
+            }
+          };
+          v.addEventListener("timeupdate", onTU);
+          v.addEventListener("playing", () => { setTimeout(hidePlaceholder, 80); }, { once: true });
+          return;
+        }
+
+        // LEFT: 바로 전환(기존 방식 유지)
+        hidePlaceholder();
+      } catch {
+        hidePlaceholder();
+      }
+    };
+
+    const revealAndPlay = () => {
+      if (revealed) return;
+      revealed = true;
+      if (tokenLocal !== this._token) return;
+
+      // 로딩 타이머는 닫되, RIGHT는 placeholder(loading.jpg)를 프레임까지 유지
+      clearTimeout(this.loadTimer);
+
+      const keepPh = (this.name === "RIGHT");
+      this.el.vid.style.display = "block"; // 비디오는 뒤에서 준비
+      if (!keepPh) {
+        this._clearBlankTimer();
+        this.el.ph.style.display = "none";
+      } else {
+        // 로딩(브랜드) 계속 보이게
+        this.el.ph.classList.add("loading");
+        this.el.ph.textContent = "";
+        this.el.ph.style.display = "flex";
+      }
+
+      // 보여주기 직전에 0초 고정(안전)
+      forceStartZero();
+
+      const delay = (this.name === "RIGHT") ? 200 : 0; // 일부 TV에서 동시 autoplay 제한 대비
+
+      const tryPlay = (attempt = 0) => {
+        if (tokenLocal !== this._token) return;
+        try { v.muted = true; v.volume = 0; } catch {}
+
+        const p = v.play();
+        if (p && typeof p.then === "function") {
+          p.then(() => armHideOnFrame()).catch(() => {
+            if (tokenLocal !== this._token) return;
+            if (attempt < 6) setTimeout(() => tryPlay(attempt + 1), 250 * (attempt + 1));
+            else this.skip("autoplay blocked");
+          });
+        } else {
+          // 일부 환경에서 play()가 Promise를 안 주는 경우
+          armHideOnFrame();
+        }
+      };
+
+      setTimeout(() => tryPlay(0), delay);
+    };
+
+    // 1) metadata 시점: 시작점 0 고정
+    v.onloadedmetadata = () => {
+      if (tokenLocal !== this._token) return;
+      forceStartZero();
+    };
+
+    // 2) 첫 프레임 준비 시점: 그때 화면을 열고 재생 시작
+    v.onloadeddata = () => {
+      if (tokenLocal !== this._token) return;
+      revealAndPlay();
+    };
+
+    // 3) 일부 TV에서 loadeddata가 늦거나 안 오면 canplay를 백업으로 사용
+    v.oncanplay = () => {
+      if (tokenLocal !== this._token) return;
+      revealAndPlay();
+    };
+
+    v.onerror = () => {
       clearTimeout(this.loadTimer);
       this._clearBlankTimer();
+      this.skip("video error");
+    };
 
-      try {
-        const v = this.el.vid;
-        v.pause();
-        v.removeAttribute("src");
-        v.src = "";
-        v.load();
-      } catch {}
+    const online = !!NET_STATE.online;
 
-      this.currentUrl = url;
-      this.currentLink = link;
-      this.showOverlay(link);
+    if (online) {
+      // 즉시 스트리밍 재생 (빠름)
+      try { v.removeAttribute("crossorigin"); } catch {} // CORS 없더라도 재생되게
+      v.src = url;
+      try { v.load(); } catch {}
 
-      this.el.vid.style.display = "none";
-      this.el.img.src = url;
-      this.el.img.style.display = "block";
+      // 백업: 일부 TV에서 이벤트가 늦어질 수 있어 2.5초 후 재생을 한 번 더 시도(placeholder는 유지)
+      setTimeout(() => {
+        try {
+          if (SLEEP_ACTIVE) return;
+          if (tokenLocal !== this._token) return;
+          if (revealed) return;
+          try { v.play().catch(() => {}); } catch {}
+        } catch {}
+      }, 2500);
+      return;
+    }
+
+    // 오프라인이면: blob 재생을 사용하지 않음 → 온라인 복귀 대기
+    this._waitForOnline("offline video (no-blob mode)");
+  }
+
+
+  playImage(url, durationSec) {
+    const meta = this._meta("image", url);
+
+    // stop video
+    this.el.vid.pause();
+    this.el.vid.removeAttribute("src");
+    this.el.vid.load();
+
+    this.el.vid.style.display = "none";
+    this.el.img.style.display = "none";
+
+    // 오프라인 + 캐시 없음이면 "대기"로 전환(무한 스킵 방지)
+    if (!NET_STATE.online) {
+      cacheHas(url).then((hit) => {
+        if (!hit) return this._waitForOnline("offline no cached image");
+        // 캐시가 있으면 정상 로드 진행
+        this._loadImage(url, durationSec, meta);
+      }).catch(() => this._waitForOnline("offline no cached image"));
+      return;
+    }
+
+    this._loadImage(url, durationSec, meta);
+  }
+
+  _loadImage(url, durationSec, meta) {
+    this.el.img.onload = () => {
+      this._clearBlankTimer();
+      clearTimeout(this.loadTimer);
       this.el.ph.style.display = "none";
+      this.el.img.style.display = "block";
 
       try { touchMediaMeta(url, { ...meta, ts: Date.now() }); } catch {}
 
       clearTimeout(this.imgTimer);
-      this.imgTimer = setTimeout(() => this.next(), duration * 1000);
+      this.imgTimer = setTimeout(() => this.next(), durationSec * 1000);
     };
-    pre.onerror = () => this.skip("image error");
-    pre.src = url;
+    this.el.img.onerror = () => { this._clearBlankTimer(); this.skip("image error"); }
+    this.el.img.src = url;
 
+    // 백그라운드 캐시(온라인일 때)
     ensureCached(url, meta).catch(()=>{});
-  }
-
-  async _startBlobVideo(item, tokenLocal) {
-    const url = item.url || "";
-    const link = item.link || "";
-    const meta = this._meta("video", url);
-
-    try {
-      const blobUrl = await getVideoBlobUrlFromCache(url, meta);
-      if (tokenLocal !== this._token) {
-        try { URL.revokeObjectURL(blobUrl); } catch {}
-        return;
-      }
-
-      if (this._blobUrl) {
-        try { URL.revokeObjectURL(this._blobUrl); } catch {}
-      }
-      this._blobUrl = blobUrl;
-
-      const v = this.el.vid;
-
-      try {
-        v.autoplay = false;
-        v.removeAttribute("autoplay");
-        v.muted = true;
-        v.volume = 0;
-        v.playsInline = true;
-        v.setAttribute("muted", "");
-        v.setAttribute("playsinline", "");
-        v.setAttribute("webkit-playsinline", "");
-      } catch {}
-
-      v.onloadedmetadata = null;
-      v.onloadeddata = null;
-      v.oncanplay = null;
-      v.onerror = null;
-
-      let revealed = false;
-
-      const forceStartZero = () => {
-        try { if (v.readyState >= 1) v.currentTime = 0; } catch {}
-      };
-
-      const revealAndPlay = () => {
-        if (revealed) return;
-        revealed = true;
-        if (tokenLocal !== this._token) return;
-
-        clearTimeout(this.loadTimer);
-
-        this.currentUrl = url;
-        this.currentLink = link;
-        this.showOverlay(link);
-
-        this.el.img.style.display = "none";
-        this.el.vid.style.display = "block";
-        this.el.ph.style.display = "none";
-        this._clearBlankTimer();
-
-        forceStartZero();
-
-        const p = v.play();
-        if (p && typeof p.then === "function") {
-          p.catch(() => this.skip("autoplay blocked"));
-        }
-      };
-
-      v.onloadedmetadata = () => {
-        if (tokenLocal !== this._token) return;
-        forceStartZero();
-      };
-
-      v.onloadeddata = () => {
-        if (tokenLocal !== this._token) return;
-        revealAndPlay();
-      };
-
-      v.oncanplay = () => {
-        if (tokenLocal !== this._token) return;
-        revealAndPlay();
-      };
-
-      v.onerror = () => {
-        clearTimeout(this.loadTimer);
-        this._clearBlankTimer();
-        this.skip("video error");
-      };
-
-      v.src = blobUrl;
-      try { v.load(); } catch {}
-    } catch {
-      this.skip("video blob start failed");
-    }
-  }
-
-  _holdLastFrameUntilReady(item, tokenLocal) {
-    if (tokenLocal !== this._token) return;
-    if (!this.hasVisibleFrame()) this.showLoading(true);
-    else this.el.ph.style.display = "none";
-
-    this._clearReadyPoll();
-    const pollMs = Math.max(500, Number(CONFIG?.holdPollMs || 1500));
-
-    this._readyPollTimer = setTimeout(async () => {
-      if (tokenLocal !== this._token || SLEEP_ACTIVE) return;
-      try {
-        const hit = await cacheHas(item.url);
-        if (hit) {
-          return this._startBlobVideo(item, tokenLocal);
-        }
-        if (NET_STATE.online) {
-          ensureVideoCached(item.url, this._meta("video", item.url), {
-            maxMB: CONFIG?.videoCacheMaxMB || 80
-          }).catch(()=>{});
-        }
-      } catch {}
-      this._holdLastFrameUntilReady(item, tokenLocal);
-    }, pollMs);
-  }
-
-  playVideo(item) {
-    const url = item.url || "";
-    const tokenLocal = ++this._token;
-    const hadFrame = this.hasVisibleFrame();
-
-    if (!hadFrame) this.showLoading(true);
-    else this.el.ph.style.display = "none";
-
-    ensureVideoCached(url, this._meta("video", url), {
-      maxMB: CONFIG?.videoCacheMaxMB || 80
-    }).then((ok) => {
-      if (tokenLocal !== this._token || SLEEP_ACTIVE) return;
-      if (ok) return this._startBlobVideo(item, tokenLocal);
-      this._holdLastFrameUntilReady(item, tokenLocal);
-    }).catch(() => {
-      if (tokenLocal !== this._token || SLEEP_ACTIVE) return;
-      this._holdLastFrameUntilReady(item, tokenLocal);
-    });
   }
 
   getNextUrls(n=2) {
     const out = [];
     const L = this.list.length;
     if (!L) return out;
-    for (let k = 1; k <= n; k++) {
+    for (let k=1; k<=n; k++) {
       const item = this.list[(this.idx + k) % L];
       if (item && item.url) out.push(item.url);
     }
     return out;
   }
 
-  async prefetchNext() {
+  prefetchNext() {
     if (!CONFIG?.enableOfflineCache) return;
     if (!NET_STATE.online) return;
-    if (SLEEP_ACTIVE) return;
 
-    const ahead = Math.max(1, Number(CONFIG?.videoCacheAhead || 1));
-    const urls = this.getNextUrls(ahead);
+    const urls = this.getNextUrls(2).filter(u => !isVideo(u));
     if (!urls.length) return;
 
-    for (const u of urls) {
-      const meta = this._meta(isVideo(u) ? "video" : "image", u);
-      if (isVideo(u)) {
-        await ensureVideoCached(u, meta, { maxMB: CONFIG?.videoCacheMaxMB || 80 }).catch(()=>false);
-      } else {
-        await ensureCached(u, meta).catch(()=>false);
-      }
-    }
+    const metaMap = {};
+    for (const u of urls) metaMap[u] = this._meta(isVideo(u) ? "video" : "image", u);
 
-    pruneMediaCache({
-      keepUrls: collectKeepUrls().concat(urls),
-      maxEntries: CONFIG.cacheMaxEntries || 12
+    // 가볍게 미리 캐시만(진단용 카운트/정리까지는 updatePlaylists에서)
+    prefetchUrls(urls, metaMap).then(() => {
+      // 상한 관리(오래된 것부터)
+      pruneMediaCache({ keepUrls: collectKeepUrls().concat(urls), maxEntries: CONFIG.cacheMaxEntries || 12 }).catch(()=>{});
     }).catch(()=>{});
   }
 
   next() {
     this._clearBlankTimer();
-    this._clearReadyPoll();
     this.idx = (this.idx + 1) % Math.max(this.list.length, 1);
     this.play();
   }
 
   skip(reason) {
     this._clearBlankTimer();
-    this._clearReadyPoll();
-
+    // 오프라인 캐시 없음은 watchdog/에러카운트로 잡지 않음(대기 모드로 처리)
     if (/offline/i.test(reason)) {
       return this._waitForOnline(reason);
     }
