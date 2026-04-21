@@ -23,8 +23,8 @@ const els = {
 };
 
 // ===== Build / Version (v7) =====
-const LV_BUILD = "v7.5.1";
-const LV_BUILD_DETAIL = "v7.5.1-open-admin-20260422";
+const LV_BUILD = "v7.5.2";
+const LV_BUILD_DETAIL = "v7.5.2-dual-video-20260422";
 const LV_CACHE_VERSION = "v21";
 const LV_MEDIA_CACHE_VERSION = "v4";
 let LV_REMOTE_BUILD = "-";
@@ -1443,41 +1443,9 @@ class SimplePlayer {
     const link = item.link || "";
     const duration = Number(item.duration) || CONFIG.imageDurationSecDefault;
 
-    // ✅ TV 스틱 디코더 한계 보호: LEFT/RIGHT 동시 영상 재생을 피함(우선 LEFT)
-    try {
-      if (isVideo(url) && this.name === "RIGHT") {
-        const other = leftPlayer;
-        const otherVid = other?.el?.vid;
-        const otherVideoPlaying = !!(other && isVideo(other.currentUrl) && otherVid && otherVid.style.display === "block" && !otherVid.paused);
-        if (otherVideoPlaying) {
-          // RIGHT는 영상 대신 다음 '비디오가 아닌' 콘텐츠로 넘어감(없으면 잠시 대기)
-          let found = -1;
-          for (let k=1; k<=this.list.length; k++) {
-            const cand = this.list[(this.idx + k) % this.list.length];
-            if (cand && cand.url && !isVideo(cand.url)) { found = (this.idx + k) % this.list.length; break; }
-          }
-          if (found >= 0) {
-            this.idx = found;
-            return this.play();
-          }
-          // 전부 비디오면: 로딩(브랜드) 유지 + 5초 후 재시도
-          this.showLoading();
-          clearTimeout(this.loadTimer);
-          clearTimeout(this.imgTimer);
-          clearTimeout(this._waitTimer);
-          this._waitTimer = setTimeout(() => { if (!SLEEP_ACTIVE) this.play(); }, 5000);
-          return;
-        }
-      }
-      // LEFT가 영상 재생을 시작하려는데 RIGHT가 영상 재생 중이면 RIGHT를 잠깐 멈춰 리소스 회수
-      if (isVideo(url) && this.name === "LEFT") {
-        const o = rightPlayer;
-        const ov = o?.el?.vid;
-        if (o && isVideo(o.currentUrl) && ov && ov.style.display === "block" && !ov.paused) {
-          try { ov.pause(); } catch {}
-        }
-      }
-    } catch {}
+    // 좌/우 동시 영상 재생 허용
+    // - 캐시 기반 재생이므로, 한쪽 영상 때문에 다른 쪽 영상을 막지 않습니다.
+    // - LEFT/RIGHT 모두 각자 playlist 기준으로 그대로 재생합니다.
 
     this.currentUrl = url;
     this.currentLink = link;
