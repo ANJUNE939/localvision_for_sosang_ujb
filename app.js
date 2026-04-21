@@ -23,8 +23,8 @@ const els = {
 };
 
 // ===== Build / Version (v7) =====
-const LV_BUILD = "v7.5.0";
-const LV_BUILD_DETAIL = "v7.5.0-operational-stability-20260421";
+const LV_BUILD = "v7.5.1";
+const LV_BUILD_DETAIL = "v7.5.1-open-admin-20260422";
 const LV_CACHE_VERSION = "v21";
 const LV_MEDIA_CACHE_VERSION = "v4";
 let LV_REMOTE_BUILD = "-";
@@ -547,37 +547,11 @@ function isDangerousActionLocked() {
 }
 
 function adminLockLabel() {
-  if (!CONFIG) return "LOCK?";
-  if (CONFIG.settingsLock === false) return "UNLOCKED(config)";
-  if (!getAdminPin()) return isAdminRole() ? "ADMIN(no-pin)" : "LOCKED(no-pin)";
-  return isDangerousActionLocked() ? "LOCKED" : `UNLOCKED ${Math.max(0, Math.ceil((ADMIN_UNLOCK.until - Date.now())/60000))}m`;
+  return "OPEN";
 }
 
 function ensureAdminUnlocked(actionLabel="설정 변경") {
-  try {
-    if (!CONFIG) return false;
-    if (CONFIG.settingsLock === false) return true;
-    if (!getAdminPin()) {
-      if (isAdminRole()) return true;
-      alert(`${actionLabel}은 관리자만 가능합니다.
-URL에 role=admin&adminPin=1234 형태로 잠금을 사용하세요.`);
-      return false;
-    }
-    if (!isDangerousActionLocked()) return true;
-    const input = window.prompt(`${actionLabel} PIN 4자리 입력`, "");
-    if (input == null) return false;
-    if (String(input).trim() !== String(getAdminPin()).trim()) {
-      alert("PIN이 올바르지 않습니다.");
-      return false;
-    }
-    ADMIN_UNLOCK.ok = true;
-    ADMIN_UNLOCK.until = Date.now() + (CONFIG.adminUnlockMinutes * 60 * 1000);
-    ADMIN_UNLOCK.source = "pin";
-    try { updateDiag(); } catch {}
-    return true;
-  } catch {
-    return false;
-  }
+  return true;
 }
 
 // ===== Reload Coordinator =====
@@ -1153,7 +1127,7 @@ async function loadConfig() {
     forceReloadMode: params.get("forceReloadMode") || "reload",
 
     // 설정 잠금 / 운영 안전장치
-    settingsLock: boolParam(params, "settingsLock", true),
+    settingsLock: boolParam(params, "settingsLock", false),
     adminUnlockMinutes: numParam(params, "adminUnlockMin", 10),
 
     // reload 쿨다운 (여러 복구 주체가 겹치지 않도록)
