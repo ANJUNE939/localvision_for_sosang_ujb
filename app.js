@@ -23,10 +23,14 @@ const els = {
 };
 
 // ===== Build / Version (v7) =====
-const LV_BUILD = "v7.3.14";
-const LV_BUILD_DETAIL = "v7.3.14-20260226_141244";
+const LV_BUILD = "v7.5.0";
+const LV_BUILD_DETAIL = "v7.5.0-operational-stability-20260421";
+const LV_CACHE_VERSION = "v21";
+const LV_MEDIA_CACHE_VERSION = "v4";
 let LV_REMOTE_BUILD = "-";
 let _lvUpdateReloadScheduled = false;
+let _lvReloadReason = "-";
+let _lvReloadPlannedAt = 0;
 
 // ===== Sleep Mode (Black/Screensaver) =====
 // 요구사항
@@ -202,6 +206,7 @@ function updateSleepUI() {
 }
 
 function openSleepPanel() {
+  if (!ensureAdminUnlocked("취침 설정 열기")) return;
   const p = document.getElementById("sleepPanel");
   if (!p) return;
 
@@ -227,6 +232,7 @@ function closeSleepPanel() {
 
 
 function toggleManualSleep() {
+  if (!ensureAdminUnlocked("즉시 취침 토글")) return;
   // 1회 누르면 "지금 상태 반대로" 수동 적용
   // 다시 누르면 수동 해제(자동 스케줄로 복귀)
   if (SLEEP_MANUAL !== null) {
@@ -352,6 +358,7 @@ function setupSleepUI() {
   });
 
   bind("sleepSave", () => {
+    if (!ensureAdminUnlocked("취침 설정 저장")) return;
     _writeSavedSleep(_sleepEdit);
     SLEEP_MANUAL = null; // 저장하면 자동 스케줄로 복귀
     closeSleepPanel();
@@ -503,10 +510,110 @@ function setupWatchdog() {
 }
 
 
-const MEDIA_CACHE = "lv-media-v3";
-const STATIC_CACHE = "lv-static-v18";
+const MEDIA_CACHE = `lv-media-${LV_MEDIA_CACHE_VERSION}`;
+const STATIC_CACHE = `lv-static-${LV_CACHE_VERSION}`;
 const CACHE_STATE = { total: 0, done: 0, running: false, msg: "-" };
 const NET_STATE = { online: navigator.onLine, lastProbe: null };
+
+// ===== Admin Lock / Dangerous Actions =====
+const ADMIN_UNLOCK = {
+  ok: false,
+  until: 0,
+  source: "locked"
+};
+
+function getAdminPin() {
+  try {
+    const q = qp("adminPin", "").trim();
+    if (q) return q;
+  } catch {}
+  try {
+    const saved = localStorage.getItem("lv_admin_pin") || "";
+    if (saved) return saved;
+  } catch {}
+  return "";
+}
+
+function isAdminRole() {
+  return getRole() === "admin";
+}
+
+function isDangerousActionLocked() {
+  if (!CONFIG) return true;
+  if (CONFIG.settingsLock === false) return false;
+  const now = Date.now();
+  if (ADMIN_UNLOCK.ok && ADMIN_UNLOCK.until > now) return false;
+  return true;
+}
+
+function adminLockLabel() {
+  if (!CONFIG) return "LOCK?";
+  if (CONFIG.settingsLock === false) return "UNLOCKED(config)";
+  if (!getAdminPin()) return isAdminRole() ? "ADMIN(no-pin)" : "LOCKED(no-pin)";
+  return isDangerousActionLocked() ? "LOCKED" : `UNLOCKED ${Math.max(0, Math.ceil((ADMIN_UNLOCK.until - Date.now())/60000))}m`;
+}
+
+function ensureAdminUnlocked(actionLabel="설정 변경") {
+  try {
+    if (!CONFIG) return false;
+    if (CONFIG.settingsLock === false) return true;
+    if (!getAdminPin()) {
+      if (isAdminRole()) return true;
+      alert(`${actionLabel}은 관리자만 가능합니다.
+URL에 role=admin&adminPin=1234 형태로 잠금을 사용하세요.`);
+      return false;
+    }
+    if (!isDangerousActionLocked()) return true;
+    const input = window.prompt(`${actionLabel} PIN 4자리 입력`, "");
+    if (input == null) return false;
+    if (String(input).trim() !== String(getAdminPin()).trim()) {
+      alert("PIN이 올바르지 않습니다.");
+      return false;
+    }
+    ADMIN_UNLOCK.ok = true;
+    ADMIN_UNLOCK.until = Date.now() + (CONFIG.adminUnlockMinutes * 60 * 1000);
+    ADMIN_UNLOCK.source = "pin";
+    try { updateDiag(); } catch {}
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ===== Reload Coordinator =====
+const RELOAD_GUARD = {
+  minGapMs: 15 * 60 * 1000,
+  lastTs: 0,
+  lastReason: "-"
+};
+
+function shouldSuppressReload(reason="") {
+  try {
+    const now = Date.now();
+    const gap = Number(CONFIG?.reloadMinGapMs || RELOAD_GUARD.minGapMs || 0);
+    const since = now - Number(RELOAD_GUARD.lastTs || 0);
+    if (RELOAD_GUARD.lastTs && since < gap) {
+      console.warn("[RELOAD] suppressed by cooldown", reason, Math.round((gap - since)/1000), "sec left");
+      return true;
+    }
+    if (SLEEP_ACTIVE && !/version|daily|manual/i.test(reason)) {
+      console.warn("[RELOAD] suppressed during sleep", reason);
+      return true;
+    }
+    return false;
+  } catch { return false; }
+}
+
+function markReloadScheduled(reason="") {
+  const now = Date.now();
+  RELOAD_GUARD.lastTs = now;
+  RELOAD_GUARD.lastReason = reason || "reload";
+  _lvReloadReason = RELOAD_GUARD.lastReason;
+  try {
+    localStorage.setItem("lv_last_reload_reason", RELOAD_GUARD.lastReason);
+    localStorage.setItem("lv_last_reload_at", String(now));
+  } catch {}
+}
 
 // ===== HEARTBEAT (TV online check) =====
 // 목적: TV(현장)가 1분마다 서버에 "나 켜져있어요" 출석체크를 보내면,
@@ -549,19 +656,46 @@ const HB_STATE = {
   deviceId: "-",
   apiBase: "-",
   lastSeenTs: 0,
-  online: false
+  online: false,
+  ackOk: false,
+  ackLastTs: 0,
+  ackNote: "-",
+  sendCount: 0,
+  lastSendTs: 0
 };
 
+async function verifyHeartbeatAck() {
+  try {
+    if (!CONFIG?.store) return false;
+    const url = `${HB_STATE.apiBase}/status?store=${encodeURIComponent(CONFIG.store)}&role=${encodeURIComponent(HB_STATE.role)}`;
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) throw new Error(`status ${res.status}`);
+    const data = await res.json();
+    const lastSeen = Number(data.lastSeen || 0);
+    HB_STATE.ackOk = !!data.online || (!!lastSeen && (Date.now() - lastSeen) < ((CONFIG?.heartbeatAckWindowSec || 240) * 1000));
+    HB_STATE.ackLastTs = lastSeen || Date.now();
+    HB_STATE.ackNote = HB_STATE.ackOk ? "ACK OK" : "ACK MISS";
+    return HB_STATE.ackOk;
+  } catch (e) {
+    HB_STATE.ackOk = false;
+    HB_STATE.ackNote = "ACK FAIL";
+    return false;
+  } finally {
+    try { updateDiag(); } catch {}
+  }
+}
+
 async function sendHeartbeat() {
-  // ✅ CORS/사전요청(OPTIONS) 문제를 피하기 위해 GET + no-cors로 "핑"만 보냅니다.
-  // - 서버 응답을 읽지 않아도 되므로 안정적입니다.
   try {
     if (!CONFIG?.store) return;
-    if (SLEEP_ACTIVE) return; // 취침 중엔 네트워크 작업 중단
+    if (SLEEP_ACTIVE) return;
     if (!HB_STATE.apiBase || HB_STATE.apiBase === "-") return;
 
     const url =
-      `${HB_STATE.apiBase}/heartbeat?store=${encodeURIComponent(CONFIG.store)}&role=${encodeURIComponent(HB_STATE.role)}&t=${Date.now()}`;
+      `${HB_STATE.apiBase}/heartbeat?store=${encodeURIComponent(CONFIG.store)}&role=${encodeURIComponent(HB_STATE.role)}&deviceId=${encodeURIComponent(HB_STATE.deviceId)}&t=${Date.now()}`;
+
+    HB_STATE.sendCount += 1;
+    HB_STATE.lastSendTs = Date.now();
 
     fetch(url, { method: "GET", mode: "no-cors", cache: "no-store", keepalive: true }).catch(() => {
       try {
@@ -569,6 +703,9 @@ async function sendHeartbeat() {
         img.src = url;
       } catch {}
     });
+
+    const needAck = (HB_STATE.role === "tv") && (HB_STATE.sendCount === 1 || (HB_STATE.sendCount % Math.max(1, Number(CONFIG?.heartbeatAckEvery || 5)) === 0));
+    if (needAck) setTimeout(() => { verifyHeartbeatAck().catch(() => {}); }, 1200);
   } catch {}
 }
 
@@ -585,7 +722,8 @@ function fmtAgo(ms) {
 }
 
 function renderTvStatus(online, lastSeen) {
-  if (els.dTvStatus) els.dTvStatus.textContent = online ? "ONLINE ✅" : "OFFLINE ❌";
+  const ack = HB_STATE.role === "admin" ? "" : ` · ${HB_STATE.ackNote || "-"}`;
+  if (els.dTvStatus) els.dTvStatus.textContent = (online ? "ONLINE ✅" : "OFFLINE ❌") + ack;
   if (els.dTvLastSeen) {
     els.dTvLastSeen.textContent = lastSeen ? `${fmtKorea(lastSeen)} (${fmtAgo(Date.now()-lastSeen)})` : "-";
   }
@@ -746,16 +884,16 @@ function collectKeepUrls() {
 
 async function ensureCached(url, meta={}) {
   try {
-    // ✅ 비디오는 캐시/오프라인 재생(blob) 사용 안함(메모리/대역폭 이슈 방지)
-    if (isVideo(url)) return false;
-
     const hit = await cacheGet(url);
-    if (hit) { touchMediaMeta(url, { ...meta, ts: Date.now() }); return true; }
+    if (hit) {
+      touchMediaMeta(url, { ...meta, ts: Date.now(), type: meta.type || (isVideo(url) ? "video" : "image") });
+      return true;
+    }
     if (!NET_STATE.online) return false;
 
     const res = await fetch(url, { cache: "no-store" });
     if (res && res.ok) {
-      await cachePut(url, res.clone(), meta);
+      await cachePut(url, res.clone(), { ...meta, type: meta.type || (isVideo(url) ? "video" : "image") });
       return true;
     }
   } catch {}
@@ -837,8 +975,7 @@ async function prefetchAllMedia(urls=[], metaMap={}) {
 
   // 상한 초과 시: 오래된 것부터 삭제 (좌측(LEFT)은 더 오래 유지)
   try {
-    const keep = collectKeepUrls().concat(uniq);
-    await pruneMediaCache({ keepUrls: keep, maxEntries: CONFIG.cacheMaxEntries || 12 });
+    await pruneMediaCache({ keepUrls: getProtectedCacheUrls(uniq), maxEntries: CONFIG.cacheMaxEntries || 12 });
   } catch {}
 
   CACHE_STATE.running = false;
@@ -994,14 +1131,14 @@ async function loadConfig() {
     // Watchdog(자가복구)
     watchdogEnabled: boolParam(params, "wd", true),
     watchdogStallMs: numParam(params, "wdStall", 30000),
-    watchdogMaxErrors: numParam(params, "wdErr", 3),
+    watchdogMaxErrors: numParam(params, "wdErr", 5),
     watchdogWindowMs: numParam(params, "wdWin", 300000),
     watchdogMemThreshold: numParam(params, "wdMem", 0.88),
 
     // ✅ 자동 버전 체크(무터치 업데이트): version.json 값이 바뀌면 자동 reload
     versionWatchEnabled: boolParam(params, "verWatch", true),
     versionCheckMs: numParam(params, "verCheckMs", 600000),
-    versionReloadJitterSec: numParam(params, "verReloadJitterSec", 30),
+    versionReloadJitterSec: numParam(params, "verReloadJitterSec", 45),
     versionUrl: params.get("verUrl") || "./version.json",
 
     // ✅ Failover: 콘텐츠가 너무 오래 안 보이면 다음 콘텐츠로 강제 이동
@@ -1009,11 +1146,25 @@ async function loadConfig() {
     blankSkipMs: Math.max(0, numParam(params, "blankSkipSec", 10)) * 1000,
 
     // ✅ 보험: 30분마다 강제 새로고침 (URL로 조절: &forceReloadMin=30)
-    forceReloadMin: numParam(params, "forceReloadMin", 30),
+    forceReloadMin: numParam(params, "forceReloadMin", 0),
     forceReloadJitterSec: numParam(params, "forceReloadJitterSec", 180),
     forceReloadSkipOffline: boolParam(params, "forceReloadSkipOffline", true),
     forceReloadGapMin: numParam(params, "forceReloadGapMin", 10),
-    forceReloadMode: params.get("forceReloadMode") || "reload"
+    forceReloadMode: params.get("forceReloadMode") || "reload",
+
+    // 설정 잠금 / 운영 안전장치
+    settingsLock: boolParam(params, "settingsLock", true),
+    adminUnlockMinutes: numParam(params, "adminUnlockMin", 10),
+
+    // reload 쿨다운 (여러 복구 주체가 겹치지 않도록)
+    reloadMinGapMs: Math.max(0, numParam(params, "reloadGapMin", 15)) * 60 * 1000,
+
+    // heartbeat 확인 주기 / 신뢰도 강화
+    heartbeatAckEvery: numParam(params, "hbAckEvery", 5),
+    heartbeatAckWindowSec: numParam(params, "hbAckWindowSec", 240),
+
+    // version 업데이트는 기본적으로 취침 시간 우선
+    versionReloadWindow: params.get("verReloadWindow") || "sleep-first"
 };
 }
 
@@ -1035,6 +1186,118 @@ function loadPlaylistCache(key, fallback = []) {
   } catch {
     return Array.isArray(fallback) ? fallback : [];
   }
+}
+
+function getBundleUrlsFromLists(leftList = [], rightList = []) {
+  const urls = [];
+  for (const it of leftList || []) if (it?.url) urls.push(it.url);
+  for (const it of rightList || []) if (it?.url) urls.push(it.url);
+  return [...new Set(urls.filter(Boolean))];
+}
+
+function buildBundleMetaMap(leftList = [], rightList = []) {
+  const metaMap = {};
+  for (const it of leftList || []) {
+    if (!it?.url) continue;
+    metaMap[it.url] = { pri: 2, side: "LEFT", type: isVideo(it.url) ? "video" : "image" };
+  }
+  for (const it of rightList || []) {
+    if (!it?.url) continue;
+    metaMap[it.url] = { pri: 1, side: "RIGHT", type: isVideo(it.url) ? "video" : "image" };
+  }
+  return metaMap;
+}
+
+function getSavedBundleUrls() {
+  return getBundleUrlsFromLists(loadPlaylistCache("LEFT", []), loadPlaylistCache("RIGHT", []));
+}
+
+function getProtectedCacheUrls(extra = []) {
+  return [...new Set([
+    ...getSavedBundleUrls(),
+    ...collectKeepUrls(),
+    ...(extra || [])
+  ].filter(Boolean))];
+}
+
+function primePlayersFromSavedBundle() {
+  const leftCached = loadPlaylistCache("LEFT", []);
+  const rightCached = loadPlaylistCache("RIGHT", []);
+
+  if (leftCached.length) {
+    leftPlayer.setList(leftCached);
+    LAST_SIG.LEFT = listSignature(leftCached);
+  }
+  if (rightCached.length) {
+    rightPlayer.setList(rightCached);
+    LAST_SIG.RIGHT = listSignature(rightCached);
+  }
+
+  return {
+    leftCached,
+    rightCached,
+    ready: !!(leftCached.length && rightCached.length)
+  };
+}
+
+async function getMissingUrls(urls = []) {
+  const uniq = [...new Set((urls || []).filter(Boolean))];
+  const missing = [];
+  for (const u of uniq) {
+    try {
+      const hit = await cacheGet(u);
+      if (!hit) missing.push(u);
+    } catch {
+      missing.push(u);
+    }
+  }
+  return missing;
+}
+
+async function ensureBundleCached(urls = [], metaMap = {}) {
+  const uniq = [...new Set((urls || []).filter(Boolean))];
+  if (!uniq.length) return { ok: true, failed: [] };
+
+  CACHE_STATE.total = uniq.length;
+  CACHE_STATE.done = 0;
+  CACHE_STATE.running = true;
+  CACHE_STATE.msg = "번들 확인 중...";
+  updateDiag();
+
+  const failed = [];
+
+  for (const u of uniq) {
+    let ok = false;
+    try {
+      const hit = await cacheGet(u);
+      if (hit) {
+        touchMediaMeta(u, { ...(metaMap[u] || {}), ts: Date.now() });
+        ok = true;
+      } else {
+        CACHE_STATE.msg = `다운로드 중...`;
+        ok = await ensureCached(u, metaMap[u] || {});
+      }
+    } catch {
+      ok = false;
+    }
+
+    if (!ok) failed.push(u);
+    CACHE_STATE.done += 1;
+    updateDiag();
+  }
+
+  try {
+    await pruneMediaCache({
+      keepUrls: getProtectedCacheUrls(uniq),
+      maxEntries: CONFIG.cacheMaxEntries || 12
+    });
+  } catch {}
+
+  CACHE_STATE.running = false;
+  CACHE_STATE.msg = failed.length ? `실패 ${failed.length}개` : "완료";
+  updateDiag();
+
+  return { ok: failed.length === 0, failed };
 }
 
 class SimplePlayer {
@@ -1420,12 +1683,16 @@ class SimplePlayer {
       this.skip("video error");
     };
 
-    const online = !!NET_STATE.online;
+    try {
+      const blobUrl = await getVideoBlobUrl(url, this._meta("video", url));
+      if (tokenLocal !== this._token) {
+        try { URL.revokeObjectURL(blobUrl); } catch {}
+        return;
+      }
 
-    if (online) {
-      // 즉시 스트리밍 재생 (빠름)
-      try { v.removeAttribute("crossorigin"); } catch {} // CORS 없더라도 재생되게
-      v.src = url;
+      this._blobUrl = blobUrl;
+      try { v.removeAttribute("crossorigin"); } catch {}
+      v.src = blobUrl;
       try { v.load(); } catch {}
 
       // 백업: 일부 TV에서 이벤트가 늦어질 수 있어 2.5초 후 재생을 한 번 더 시도(placeholder는 유지)
@@ -1438,10 +1705,9 @@ class SimplePlayer {
         } catch {}
       }, 2500);
       return;
+    } catch {
+      this._waitForOnline("offline video cache miss");
     }
-
-    // 오프라인이면: blob 재생을 사용하지 않음 → 온라인 복귀 대기
-    this._waitForOnline("offline video (no-blob mode)");
   }
 
 
@@ -1503,7 +1769,7 @@ class SimplePlayer {
     if (!CONFIG?.enableOfflineCache) return;
     if (!NET_STATE.online) return;
 
-    const urls = this.getNextUrls(2).filter(u => !isVideo(u));
+    const urls = this.getNextUrls(2);
     if (!urls.length) return;
 
     const metaMap = {};
@@ -1512,7 +1778,7 @@ class SimplePlayer {
     // 가볍게 미리 캐시만(진단용 카운트/정리까지는 updatePlaylists에서)
     prefetchUrls(urls, metaMap).then(() => {
       // 상한 관리(오래된 것부터)
-      pruneMediaCache({ keepUrls: collectKeepUrls().concat(urls), maxEntries: CONFIG.cacheMaxEntries || 12 }).catch(()=>{});
+      pruneMediaCache({ keepUrls: getProtectedCacheUrls(urls), maxEntries: CONFIG.cacheMaxEntries || 12 }).catch(()=>{});
     }).catch(()=>{});
   }
 
@@ -1563,7 +1829,8 @@ function updateDiag() {
     const a = CACHE_STATE.total || 0;
     const b = CACHE_STATE.done || 0;
     const msg = CACHE_STATE.msg || "-";
-    els.dCache.textContent = a ? `${b}/${a} · ${msg}` : msg;
+    const lock = adminLockLabel();
+    els.dCache.textContent = (a ? `${b}/${a} · ${msg}` : msg) + ` · ${lock}`;
   }
 
   const last = localStorage.getItem("lv_last_update") || "-";
@@ -1571,10 +1838,15 @@ function updateDiag() {
 
   if (els.dBuild) {
     const r = (typeof LV_REMOTE_BUILD === 'string' && LV_REMOTE_BUILD !== '-') ? ` (remote:${LV_REMOTE_BUILD})` : '';
-    els.dBuild.textContent = `${LV_BUILD_DETAIL}${r}`;
+    const rr = _lvReloadReason && _lvReloadReason !== '-' ? ` · reload:${_lvReloadReason}` : '';
+    els.dBuild.textContent = `${LV_BUILD_DETAIL} · cache:${LV_CACHE_VERSION}/${LV_MEDIA_CACHE_VERSION}${r}${rr}`;
   }
 
   // 취침 상태 표시
+  if (els.dTvLastSeen && HB_STATE.role !== "admin" && HB_STATE.ackLastTs) {
+    els.dTvLastSeen.textContent = `${fmtKorea(HB_STATE.ackLastTs)} (${fmtAgo(Date.now()-HB_STATE.ackLastTs)})`;
+  }
+
   if (els.dSleep) {
     const r = _sleepResolved || { start: "00:00", end: "09:30", mode: "black", _src: "-" };
     const modeLabel = (r.mode === "saver") ? "세이버" : "블랙";
@@ -1627,6 +1899,8 @@ function msUntilNextTime(hhmm) {
 }
 
 async function triggerRestartNow(reason = "manual") {
+  if (shouldSuppressReload(reason)) return false;
+  markReloadScheduled(reason);
   // 최신 파일(sw/app.js 등) 받게끔, 재시작 전에 SW 업데이트를 한 번 시도
   try {
     if ("serviceWorker" in navigator) {
@@ -1656,7 +1930,7 @@ async function triggerRestartNow(reason = "manual") {
   if (mode === "fully" || (mode === "auto" && hasFully)) {
     try {
       window.fully.restartApp();
-      return;
+      return true;
     } catch {}
   }
 
@@ -1665,6 +1939,7 @@ async function triggerRestartNow(reason = "manual") {
     localStorage.setItem("lv_last_restart", `${nowStr()} (${reason})`);
   } catch {}
   location.reload();
+  return true;
 }
 
 function scheduleDailyRestart() {
@@ -1711,18 +1986,7 @@ async function maybeRegisterSW() {
   }
 }
 
-async function prefetchToSW(urls) {
-  if (!CONFIG.enableOfflineCache) return;
-  if (!("serviceWorker" in navigator)) return;
-
-  try {
-    const reg = await navigator.serviceWorker.ready;
-    if (!reg.active) return;
-
-    reg.active.postMessage({ type:"CACHE_URLS", payload:{ urls }});
-  } catch {}
-}
-
+// prefetchToSW removed: service worker cache warming is handled directly by ensureCached/ensureBundleCached.
 
 function normalizeList(arr, baseUrl) {
   // playlist.json 안의 url이 "flower_1.jpg"처럼 상대경로여도 OK.
@@ -1806,7 +2070,7 @@ async function updatePlaylists(reason="") {
   const leftUrl = resolveUrl(CONFIG.leftPlaylistUrl);
   const rightUrl = resolveUrl(CONFIG.rightPlaylistUrl);
 
-  // 오프라인이면: 캐시 재생 + 다음 동기화 대기
+  // 오프라인이면: 마지막 정상 번들 유지
   if (!NET_STATE.online) {
     PENDING_SYNC = true;
     updateNetBadge();
@@ -1814,15 +2078,21 @@ async function updatePlaylists(reason="") {
     const leftCached = loadPlaylistCache("LEFT", []);
     const rightCached = loadPlaylistCache("RIGHT", []);
 
-    if (leftCached.length) leftPlayer.setList(leftCached);
-    if (rightCached.length) rightPlayer.setList(rightCached);
-
-    if (!SLEEP_ACTIVE) {
-      if (!leftPlayer.currentUrl) leftPlayer.play();
-      if (!rightPlayer.currentUrl) rightPlayer.play();
+    if (leftCached.length) {
+      leftPlayer.setList(leftCached);
+      LAST_SIG.LEFT = listSignature(leftCached);
+    }
+    if (rightCached.length) {
+      rightPlayer.setList(rightCached);
+      LAST_SIG.RIGHT = listSignature(rightCached);
     }
 
-    localStorage.setItem("lv_last_update", `${when} (OFFLINE: sync wait)`);
+    if (!SLEEP_ACTIVE) {
+      if (!leftPlayer.currentUrl && leftPlayer.list.length) leftPlayer.play();
+      if (!rightPlayer.currentUrl && rightPlayer.list.length) rightPlayer.play();
+    }
+
+    localStorage.setItem("lv_last_update", `${when} (OFFLINE: last bundle)`);
     updateDiag();
     return;
   }
@@ -1839,86 +2109,60 @@ async function updatePlaylists(reason="") {
     const leftList = normalizeList(leftJson, leftUrl);
     const rightList = normalizeList(rightJson, rightUrl);
 
-    // playlist가 비었거나 깨졌으면 롤백
     if (!leftList.length || !rightList.length) {
       throw new Error("playlist empty");
     }
 
     const sigL = listSignature(leftList);
     const sigR = listSignature(rightList);
-
     const changed = (sigL !== LAST_SIG.LEFT) || (sigR !== LAST_SIG.RIGHT);
 
-    // 변경 없으면 재시작 없이 타임스탬프만 갱신
-    if (!changed) {
-      localStorage.setItem("lv_last_update", `${when} (no change)`);
+    const bundleUrls = getBundleUrlsFromLists(leftList, rightList);
+    const metaMap = buildBundleMetaMap(leftList, rightList);
+    const missingUrls = CONFIG.enableOfflineCache ? await getMissingUrls(bundleUrls) : [];
+
+    // 캐시 중심: 같은 번들이더라도 빠진 파일이 있으면 보수적으로 메움
+    if (CONFIG.enableOfflineCache) {
+      const prep = await ensureBundleCached(bundleUrls, metaMap);
+      if (!prep.ok) {
+        throw new Error(`bundle cache incomplete: ${prep.failed.length}`);
+      }
+    }
+
+    const shouldActivate = changed || !leftPlayer.list.length || !rightPlayer.list.length || !leftPlayer.currentUrl || !rightPlayer.currentUrl;
+
+    if (shouldActivate) {
+      leftPlayer.setList(leftList);
+      rightPlayer.setList(rightList);
+      savePlaylistCache("LEFT", leftList);
+      savePlaylistCache("RIGHT", rightList);
+      LAST_SIG.LEFT = sigL;
+      LAST_SIG.RIGHT = sigR;
+
+      if (!SLEEP_ACTIVE) {
+        leftPlayer.play();
+        rightPlayer.play();
+      }
+
+      const note = changed ? "bundle switched" : (missingUrls.length ? `bundle repaired ${missingUrls.length}` : "bundle restored");
+      localStorage.setItem("lv_last_update", `${when} (${reason || note})`);
       updateDiag();
       return;
     }
 
-    // ✅ 업데이트 안전 반영: 다음 콘텐츠를 먼저 로드 확인 후에만 교체
-    const preUrls = [];
-    for (const it of leftList.slice(0, 2)) if (it?.url) preUrls.push(it.url);
-    for (const it of rightList.slice(0, 2)) if (it?.url) preUrls.push(it.url);
-
-    const preOK = await preflightBatch(preUrls, CONFIG.updatePrefetchTimeoutMs || 6000);
-    if (!preOK) {
-      const haveCache = loadPlaylistCache("LEFT", []).length && loadPlaylistCache("RIGHT", []).length;
-      // 최초 실행 등 캐시가 없는 경우엔 "안전반영"을 완화하여 일단 재생은 하되, 이후 업데이트에서 다시 검증
-      if (haveCache) throw new Error("preflight failed");
-      console.warn("[UPDATE] preflight failed (no cache). applying anyway.");
-    }
-
-    // 적용 + 마지막 정상본 저장
-    leftPlayer.setList(leftList);
-    rightPlayer.setList(rightList);
+    // 번들은 동일하고 현재 재생 중이면, 필요한 파일만 메운 뒤 계속 재생 유지
     savePlaylistCache("LEFT", leftList);
     savePlaylistCache("RIGHT", rightList);
     LAST_SIG.LEFT = sigL;
     LAST_SIG.RIGHT = sigR;
 
-    // 캐시 전략에 따라 선캐시(오프라인/끊김 방지)
-    if (CONFIG.enableOfflineCache) {
-      let urls = [];
-      const metaMap = {};
-
-      const mark = (u, pri, side) => {
-        if (!u) return;
-        if (isVideo(u)) return; // ✅ 비디오는 선캐시 안함(blob 제거)
-        urls.push(u);
-        metaMap[u] = {
-          pri,
-          side,
-          type: isVideo(u) ? "video" : "image"
-        };
-      };
-
-      if (CONFIG.cacheStrategy === "cache-all") {
-        for (const it of leftList) mark(it.url, 2, "LEFT");
-        for (const it of rightList) mark(it.url, 1, "RIGHT");
-      } else {
-        // 기본: 다음 2개씩만 캐시(총 4개 + 현재)
-        for (const it of leftList.slice(0, 2)) mark(it.url, 2, "LEFT");
-        for (const it of rightList.slice(0, 2)) mark(it.url, 1, "RIGHT");
-      }
-
-      urls = [...new Set(urls)].filter(Boolean);
-      await prefetchAllMedia(urls, metaMap);
-    }
-
-    // 재생(무중단에 가깝게: 새 리스트 적용 후 바로)
-    if (!SLEEP_ACTIVE) {
-      leftPlayer.play();
-      rightPlayer.play();
-    }
-
-    localStorage.setItem("lv_last_update", `${when} (${reason || "updated"})`);
+    const note = missingUrls.length ? `bundle repaired ${missingUrls.length}` : "no change";
+    localStorage.setItem("lv_last_update", `${when} (${note})`);
     updateDiag();
   } catch (e) {
     console.warn("updatePlaylists failed:", e);
     errorCount += 1;
 
-    // 롤백: 마지막 정상본
     const leftCached = loadPlaylistCache("LEFT", []);
     const rightCached = loadPlaylistCache("RIGHT", []);
 
@@ -1932,12 +2176,10 @@ async function updatePlaylists(reason="") {
     }
 
     if (!SLEEP_ACTIVE) {
-      if (!leftPlayer.currentUrl) leftPlayer.play();
-      if (!rightPlayer.currentUrl) rightPlayer.play();
+      if (!leftPlayer.currentUrl && leftPlayer.list.length) leftPlayer.play();
+      if (!rightPlayer.currentUrl && rightPlayer.list.length) rightPlayer.play();
     }
 
-
-    // 캐시도 없으면, 화면에 이유를 표시(무한 '로딩 중' 방지)
     if (!leftCached.length) leftPlayer.showMsg("LEFT 로딩 실패 (진단패널 확인)");
     if (!rightCached.length) rightPlayer.showMsg("RIGHT 로딩 실패 (진단패널 확인)");
 
@@ -1986,6 +2228,7 @@ function setupDiagToggle() {
     updateNetBadge();
     probeOnline();
     if (wasPending) updatePlaylists("online");
+    if (HB_STATE.role !== "admin") verifyHeartbeatAck().catch(() => {});
     updateDiag();
   });
 
@@ -2027,18 +2270,28 @@ async function fetchRemoteBuild() {
 
 function scheduleAutoReload(reason, targetBuild) {
   if (_lvUpdateReloadScheduled) return;
+
+  const mode = String(CONFIG?.versionReloadWindow || "sleep-first").toLowerCase();
+  const inSleep = !!SLEEP_ACTIVE;
+  if (mode === "sleep-first" && !inSleep) {
+    console.log('[VERSION] change detected but waiting for sleep window', reason, targetBuild);
+    return;
+  }
+  if (shouldSuppressReload(`version:${reason}`)) return;
+
   _lvUpdateReloadScheduled = true;
 
-  const jitterMs = Math.max(0, Number(CONFIG.versionReloadJitterSec || 30)) * 1000;
-  const delay = 2000 + Math.floor(Math.random() * (jitterMs + 1));
+  const jitterMs = Math.max(0, Number(CONFIG.versionReloadJitterSec || 45)) * 1000;
+  const delay = 5000 + Math.floor(Math.random() * (jitterMs + 1));
+  _lvReloadPlannedAt = Date.now() + delay;
 
   try { localStorage.setItem('lv_version_target', String(targetBuild || '')); } catch {}
-  try { localStorage.setItem('lv_version_reload_planned', String(Date.now() + delay)); } catch {}
+  try { localStorage.setItem('lv_version_reload_planned', String(_lvReloadPlannedAt)); } catch {}
 
   console.log('[VERSION] change detected → reload scheduled in', Math.round(delay/1000),'s', reason, targetBuild);
   setTimeout(() => {
     try { localStorage.setItem('lv_version_last_reload', String(Date.now())); } catch {}
-    try { location.reload(); } catch {}
+    triggerRestartNow(`version:${targetBuild || reason}`);
   }, delay);
 }
 
@@ -2107,7 +2360,7 @@ function setupForcePeriodicReload() {
         // mode=trigger → triggerRestartNow(캐시 정리 포함)
         // 기본(mode=reload) → location.reload() (가벼움)
         if (mode === "trigger") triggerRestartNow("force_interval");
-        else location.reload();
+        else triggerRestartNow("force_interval");
       } catch {}
     };
 
@@ -2131,7 +2384,7 @@ function setupForcePeriodicReload() {
   if (els.btnSleepToggle) els.btnSleepToggle.addEventListener("click", () => { toggleManualSleep(); });
 
   // ✅ 진단패널: 수동 새로고침(리모컨으로도 가능)
-  if (els.btnReload) els.btnReload.addEventListener("click", () => { triggerRestartNow("diag_reload"); });
+  if (els.btnReload) els.btnReload.addEventListener("click", () => { if (ensureAdminUnlocked("수동 새로고침")) triggerRestartNow("diag_reload"); });
 
   updateDiag();
 
@@ -2163,18 +2416,24 @@ try {
   setInterval(() => {
     sendHeartbeat();
     markSelf();
-  }, 180000);
+  }, 60000);
 
   // admin이면: TV 상태를 서버에서 가져와 표기(15초마다)
   if (HB_STATE.role === "admin") {
     fetchTvStatusForAdmin();
-    setInterval(fetchTvStatusForAdmin, 15000);
+    setInterval(fetchTvStatusForAdmin, 20000);
   }
 } catch {}
 
     console.log("CONFIG:", CONFIG);
     updateNetBadge();
     setupWatchdog();
+
+    const boot = primePlayersFromSavedBundle();
+    if (boot.ready && !SLEEP_ACTIVE) {
+      if (!leftPlayer.currentUrl) leftPlayer.play();
+      if (!rightPlayer.currentUrl) rightPlayer.play();
+    }
 
     await maybeRegisterSW();
     await probeOnline(2000);

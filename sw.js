@@ -4,8 +4,10 @@
 // - playlist.json만 네트워크 우선(network-first)으로 받아서 즉시 업데이트 반영
 // - 영상(mp4 등)은 서비스워커가 개입하지 않음(206/Range/캐시 이슈 예방)
 
-const STATIC_CACHE = "lv-static-v20"; // ✅ 버전 올려서 업데이트 강제 // ✅ 버전 올려서 업데이트 강제 // ✅ 버전 올려서 업데이트 강제
-const MEDIA_CACHE  = "lv-media-v3"; // ✅ 미디어 캐시는 유지
+const LV_CACHE_VERSION = "v21";
+const LV_MEDIA_CACHE_VERSION = "v4";
+const STATIC_CACHE = `lv-static-${LV_CACHE_VERSION}`; // app.js와 동일 버전 유지
+const MEDIA_CACHE  = `lv-media-${LV_MEDIA_CACHE_VERSION}`; // 미디어 캐시 버전 통일
 
 self.addEventListener("install", (event) => {
   event.waitUntil((async () => {
@@ -115,6 +117,24 @@ function isStaticAsset(req) {
   const u = new URL(req.url);
   return /\.(html|js|css)(\?|#|$)/i.test(u.pathname) || u.pathname === "/" || u.pathname.endsWith("/index.html");
 }
+
+self.addEventListener("message", (event) => {
+  const data = event.data || {};
+  if (data.type !== "CACHE_URLS") return;
+  const urls = Array.isArray(data?.payload?.urls) ? data.payload.urls.filter(Boolean) : [];
+  event.waitUntil((async () => {
+    const cache = await caches.open(MEDIA_CACHE);
+    for (const url of urls) {
+      try {
+        const req = new Request(url, { method: "GET" });
+        const hit = await cache.match(req);
+        if (hit) continue;
+        const res = await fetch(req, { cache: "no-store" });
+        if (res && res.ok) await cache.put(req, res.clone());
+      } catch {}
+    }
+  })());
+});
 
 self.addEventListener("fetch", (event) => {
   const req = event.request;
