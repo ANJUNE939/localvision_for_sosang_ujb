@@ -9,6 +9,11 @@ LocalVision 7:3 Player (AUTO STORE v1.4.3)
 - 각 매장(왼쪽 70%) 버킷/폴더에: left/playlist.json + left_*.jpg/mp4
 - 공통(오른쪽 30%) 버킷/폴더에: right/playlist.json + right_*.jpg/mp4
 - playlist.json은 "배열" 형태여야 합니다.
+- leftBase는 버킷 루트뿐 아니라 버킷 안의 특정 prefix도 가능합니다.
+- 예) https://pub-xxxx.r2.dev/pilot/jpbunsik
+- 이 경우 실제 파일은 아래처럼 있어야 합니다.
+  - https://pub-xxxx.r2.dev/pilot/jpbunsik/left/playlist.json
+  - https://pub-xxxx.r2.dev/pilot/jpbunsik/right/playlist.json
 
 예) left/playlist.json
 [
@@ -36,8 +41,14 @@ LocalVision 7:3 Player (AUTO STORE v1.4.3)
 - TV 주소:
   https://<YOUR_PAGES_URL>/?store=ppbunsick&leftBase=https://pub-xxxx.r2.dev
 
+- 같은 버킷 안에서 pilot 전용 prefix를 쓸 수도 있습니다.
+  예) https://<YOUR_PAGES_URL>/?store=pilot-jpbunsik&leftBase=https://pub-xxxx.r2.dev/pilot/jpbunsik
+
 (옵션) RIGHT 공통 버킷을 바꾸고 싶으면:
   ...&rightBase=https://pub-yyyy.r2.dev
+
+참고:
+- leftBase / rightBase 뿐 아니라 leftbase / rightbase 소문자 쿼리도 허용합니다.
 
 ⚠️ 영상이 안 나오면(대부분 CORS)
 - R2 버킷 CORS에 GET/HEAD/OPTIONS 및 Range 헤더 허용이 필요합니다.

@@ -727,6 +727,23 @@ async function fetchTvStatusForAdmin() {
 
 let PENDING_SYNC = false; // 오프라인이면 "다음 동기화 대기"
 let LAST_SIG = { LEFT: "", RIGHT: "" };
+let SHADOW_STATE = {
+  enabled: false,
+  mode: "",
+  store: "",
+  configStore: "",
+  configUrl: "",
+  loading: false,
+  fetchOk: null,
+  error: "",
+  fetchedAt: 0,
+  comparedAt: 0,
+  legacySummary: null,
+  shadowSummary: null,
+  compareResult: null
+};
+
+try { window.__lvShadowState = SHADOW_STATE; } catch {}
 
 // media cache 메타(LRU 비슷하게 ts/우선순위 관리)
 const MEDIA_META_KEY = "lv_media_meta_v1";
@@ -1028,13 +1045,17 @@ async function loadConfig() {
   const params = new URLSearchParams(location.search);
 
   const store = safeSlug(params.get("store"), DEFAULT_STORE);
+  const mode = String(params.get("mode") || "").trim();
+  const shadowMode = mode === "pilot-config-shadow";
+  const shadowConfigStore = safeSlug(params.get("configStore") || params.get("configStoreSlug"), store);
+  const shadowConfigUrl = shadowMode ? buildShadowConfigUrl(params, store) : "";
 
   // 1) (최우선) left= 로 전체 playlist URL을 직접 줄 수 있음
   let leftPlaylistUrl = params.get("left") || "";
 
   // 2) leftBase= 로 버킷 도메인만 주면 /left/playlist.json 자동 생성
   if (!leftPlaylistUrl) {
-    const leftBase = params.get("leftBase") || STORE_LEFT_BASE[store] || "";
+    const leftBase = params.get("leftBase") || params.get("leftbase") || STORE_LEFT_BASE[store] || "";
     if (leftBase) leftPlaylistUrl = `${cleanBase(leftBase)}/left/playlist.json`;
   }
 
@@ -1043,7 +1064,7 @@ async function loadConfig() {
 
   // 4) rightBase= 로 도메인만 주면 /right/playlist.json 자동 생성 (기본은 gongtong)
   if (!rightPlaylistUrl) {
-    const rightBase = params.get("rightBase") || DEFAULT_RIGHT_BASE;
+    const rightBase = params.get("rightBase") || params.get("rightbase") || DEFAULT_RIGHT_BASE;
     if (rightBase) rightPlaylistUrl = `${cleanBase(rightBase)}/right/playlist.json`;
   }
 
@@ -1063,7 +1084,7 @@ async function loadConfig() {
     );
   }
 
-  return {
+  const config = {
     deviceId: `AUTO-${store}`,
     store,
 
@@ -1139,13 +1160,233 @@ async function loadConfig() {
 
     // version 업데이트는 기본적으로 취침 시간 우선
     versionReloadWindow: params.get("verReloadWindow") || "sleep-first"
-};
+  ,
+    shadowMode,
+    shadowModeName: mode,
+    shadowConfigStore,
+    shadowConfigUrl
+  };
+
+  SHADOW_STATE.enabled = shadowMode;
+  SHADOW_STATE.mode = mode;
+  SHADOW_STATE.store = store;
+  SHADOW_STATE.configStore = shadowConfigStore;
+  SHADOW_STATE.configUrl = shadowConfigUrl;
+  SHADOW_STATE.fetchOk = shadowMode ? null : SHADOW_STATE.fetchOk;
+  SHADOW_STATE.error = shadowMode && !shadowConfigUrl ? "shadow config URL missing" : "";
+  SHADOW_STATE.legacySummary = null;
+  SHADOW_STATE.shadowSummary = null;
+  SHADOW_STATE.compareResult = null;
+  SHADOW_STATE.fetchedAt = 0;
+  SHADOW_STATE.comparedAt = 0;
+  try { window.__lvShadowState = SHADOW_STATE; } catch {}
+
+  if (shadowMode && shadowConfigUrl) scheduleShadowBootstrapFetch();
+
+  return config;
 }
 
 async function safeFetchJson(url) {
   const res = await fetch(url, { cache:"no-store" });
   if (!res.ok) throw new Error(`fetch failed ${res.status}`);
   return await res.json();
+}
+
+function appendNoStore(url="") {
+  if (!url) return "";
+  try {
+    const u = new URL(url, location.href);
+    u.searchParams.set("_lvShadowTs", String(Date.now()));
+    return u.toString();
+  } catch {
+    const sep = String(url).includes("?") ? "&" : "?";
+    return `${url}${sep}_lvShadowTs=${Date.now()}`;
+  }
+}
+
+function sumDurations(list = []) {
+  return (Array.isArray(list) ? list : []).reduce((sum, item) => {
+    const n = Number(item?.duration) || 0;
+    return sum + (Number.isFinite(n) ? n : 0);
+  }, 0);
+}
+
+function summarizeRuntimeLists(leftList = [], rightList = []) {
+  return {
+    left: {
+      revision: null,
+      itemCount: leftList.length,
+      totalDurationSec: sumDurations(leftList),
+      signature: listSignature(leftList),
+    },
+    right: {
+      revision: null,
+      itemCount: rightList.length,
+      totalDurationSec: sumDurations(rightList),
+      signature: listSignature(rightList),
+    }
+  };
+}
+
+function shadowItemUrl(item = {}) {
+  const content = item?.content || {};
+  const raw =
+    item?.url ||
+    item?.mediaUrl ||
+    item?.media_url ||
+    content?.publicUrl ||
+    content?.public_url ||
+    content?.url ||
+    "";
+  return String(raw || "").trim();
+}
+
+function shadowItemDuration(item = {}) {
+  const content = item?.content || {};
+  const candidates = [
+    item?.durationSecOverride,
+    item?.duration_sec_override,
+    item?.durationSec,
+    item?.duration_sec,
+    content?.durationSec,
+    content?.duration_sec,
+    content?.duration
+  ];
+  for (const value of candidates) {
+    const n = Number(value);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return Number(CONFIG?.imageDurationSecDefault) || 10;
+}
+
+function shadowItemLink(item = {}) {
+  return String(item?.link || item?.linkUrl || item?.link_url || item?.content?.linkUrl || "").trim();
+}
+
+function mapShadowItemsToLegacy(items = []) {
+  return (Array.isArray(items) ? items : [])
+    .map((item) => ({
+      url: resolveUrl(shadowItemUrl(item)),
+      link: shadowItemLink(item),
+      duration: shadowItemDuration(item)
+    }))
+    .filter((item) => item.url && (isVideo(item.url) || isImage(item.url)));
+}
+
+function buildShadowSummaryFromConfig(config) {
+  const applied = config?.playlists?.applied || {};
+  const leftZone = applied?.left || {};
+  const rightZone = applied?.right || {};
+  const leftList = mapShadowItemsToLegacy(leftZone?.items || []);
+  const rightList = mapShadowItemsToLegacy(rightZone?.items || []);
+
+  return {
+    left: {
+      revision: leftZone?.revision ?? null,
+      itemCount: leftList.length,
+      totalDurationSec: sumDurations(leftList),
+      signature: listSignature(leftList),
+    },
+    right: {
+      revision: rightZone?.revision ?? null,
+      itemCount: rightList.length,
+      totalDurationSec: sumDurations(rightList),
+      signature: listSignature(rightList),
+    }
+  };
+}
+
+function compareShadowSummaries(legacySummary, shadowSummary) {
+  const reasons = [];
+  const zoneResult = (legacyZone, shadowZone, zoneName) => {
+    const itemCountMatch = legacyZone?.itemCount === shadowZone?.itemCount;
+    const durationMatch = legacyZone?.totalDurationSec === shadowZone?.totalDurationSec;
+    const signatureMatch = legacyZone?.signature === shadowZone?.signature;
+    if (!itemCountMatch) reasons.push(`${zoneName} itemCount`);
+    if (!durationMatch) reasons.push(`${zoneName} duration`);
+    if (!signatureMatch) reasons.push(`${zoneName} signature`);
+    return { itemCountMatch, durationMatch, signatureMatch };
+  };
+
+  const left = zoneResult(legacySummary?.left || {}, shadowSummary?.left || {}, "left");
+  const right = zoneResult(legacySummary?.right || {}, shadowSummary?.right || {}, "right");
+
+  return {
+    ok: reasons.length === 0,
+    left,
+    right,
+    mismatchReasons: reasons
+  };
+}
+
+function buildShadowConfigUrl(params, store) {
+  const directUrl = params.get("configUrl") || params.get("playerConfigUrl") || "";
+  if (directUrl) return directUrl;
+
+  const configStore = safeSlug(params.get("configStore") || params.get("configStoreSlug"), store);
+  const configBase = params.get("configBase") || "";
+  if (!configBase) return "";
+  return `${cleanBase(configBase)}/api/player-config/${encodeURIComponent(configStore)}`;
+}
+
+function scheduleShadowBootstrapFetch() {
+  if (!SHADOW_STATE.enabled || !SHADOW_STATE.configUrl) return;
+  setTimeout(() => {
+    fetchShadowConfigSnapshot("bootstrap").catch(() => {});
+  }, 0);
+}
+
+async function fetchShadowConfigSnapshot(reason = "manual") {
+  if (!SHADOW_STATE.enabled || !SHADOW_STATE.configUrl) return null;
+  if (SHADOW_STATE.loading) return null;
+
+  SHADOW_STATE.loading = true;
+  SHADOW_STATE.error = "";
+  try { updateDiag(); } catch {}
+
+  try {
+    const data = await safeFetchJson(appendNoStore(SHADOW_STATE.configUrl));
+    SHADOW_STATE.fetchOk = true;
+    SHADOW_STATE.error = "";
+    SHADOW_STATE.fetchedAt = Date.now();
+    SHADOW_STATE.shadowSummary = buildShadowSummaryFromConfig(data);
+    SHADOW_STATE.compareResult = SHADOW_STATE.compareResult || null;
+    return data;
+  } catch (e) {
+    SHADOW_STATE.fetchOk = false;
+    SHADOW_STATE.error = `${reason}: ${String(e?.message || e)}`;
+    return null;
+  } finally {
+    SHADOW_STATE.loading = false;
+    try {
+      window.__lvShadowState = SHADOW_STATE;
+      updateDiag();
+    } catch {}
+  }
+}
+
+async function runShadowCompare(legacySummary, reason = "compare") {
+  if (!SHADOW_STATE.enabled) return;
+  SHADOW_STATE.legacySummary = legacySummary || null;
+  const config = await fetchShadowConfigSnapshot(reason);
+  SHADOW_STATE.comparedAt = Date.now();
+
+  if (!config) {
+    SHADOW_STATE.compareResult = null;
+    try {
+      window.__lvShadowState = SHADOW_STATE;
+      updateDiag();
+    } catch {}
+    return;
+  }
+
+  const shadowSummary = SHADOW_STATE.shadowSummary || buildShadowSummaryFromConfig(config);
+  SHADOW_STATE.shadowSummary = shadowSummary;
+  SHADOW_STATE.compareResult = compareShadowSummaries(legacySummary || summarizeRuntimeLists([], []), shadowSummary);
+  try {
+    window.__lvShadowState = SHADOW_STATE;
+    updateDiag();
+  } catch {}
 }
 
 function savePlaylistCache(key, data) {
@@ -1760,6 +2001,42 @@ class SimplePlayer {
 const leftPlayer = new SimplePlayer("LEFT", els.left);
 const rightPlayer = new SimplePlayer("RIGHT", els.right);
 
+function ensureShadowDiagNode() {
+  if (!els.diag) return null;
+  let node = document.getElementById("shadowDiag");
+  if (node) return node;
+
+  node = document.createElement("pre");
+  node.id = "shadowDiag";
+  node.style.marginTop = "10px";
+  node.style.padding = "10px 12px";
+  node.style.borderRadius = "10px";
+  node.style.background = "rgba(255,255,255,0.04)";
+  node.style.border = "1px solid rgba(255,255,255,0.08)";
+  node.style.whiteSpace = "pre-wrap";
+  node.style.wordBreak = "break-word";
+  node.style.fontSize = "12px";
+  node.style.lineHeight = "1.45";
+  node.style.color = "#d9f99d";
+  node.style.display = "none";
+  els.diag.appendChild(node);
+  return node;
+}
+
+function shadowDiagLine(label, value) {
+  return `${label}: ${value == null || value === "" ? "-" : value}`;
+}
+
+function fmtShadowTs(ts) {
+  if (!ts) return "-";
+  try { return `${fmtKorea(ts)} (${fmtAgo(Date.now() - ts)})`; }
+  catch { return new Date(ts).toLocaleString(); }
+}
+
+function shadowSummaryLine(prefix, zone = {}) {
+  const rev = zone?.revision == null ? "-" : zone.revision;
+  return `${prefix} rev:${rev} count:${zone?.itemCount ?? 0} dur:${zone?.totalDurationSec ?? 0}s`;
+}
 
 function updateDiag() {
   // 온라인/오프라인 표시
@@ -1807,6 +2084,42 @@ function updateDiag() {
   if (els.dRight) els.dRight.textContent = rightPlayer?.currentUrl || "-";
 
   if (els.dErr) els.dErr.textContent = String(errorCount);
+
+  const shadowNode = ensureShadowDiagNode();
+  if (!shadowNode) return;
+  if (!SHADOW_STATE.enabled) {
+    shadowNode.style.display = "none";
+    return;
+  }
+
+  const legacy = SHADOW_STATE.legacySummary || {};
+  const shadow = SHADOW_STATE.shadowSummary || {};
+  const compare = SHADOW_STATE.compareResult || null;
+  const mismatchLabel = compare ? (compare.ok ? "NO" : "YES") : "-";
+  const reasons = compare?.mismatchReasons?.length ? compare.mismatchReasons.join(", ") : "-";
+  const fetchLabel =
+    SHADOW_STATE.loading ? "loading" :
+    SHADOW_STATE.fetchOk === true ? "ok" :
+    SHADOW_STATE.fetchOk === false ? "failed" :
+    "idle";
+
+  shadowNode.style.display = "block";
+  shadowNode.textContent = [
+    "Shadow Compare",
+    shadowDiagLine("mode", SHADOW_STATE.mode || "pilot-config-shadow"),
+    shadowDiagLine("configStore", SHADOW_STATE.configStore || SHADOW_STATE.store),
+    shadowDiagLine("configUrl", SHADOW_STATE.configUrl || "missing"),
+    shadowDiagLine("fetch", fetchLabel),
+    shadowDiagLine("fetchedAt", fmtShadowTs(SHADOW_STATE.fetchedAt)),
+    shadowDiagLine("comparedAt", fmtShadowTs(SHADOW_STATE.comparedAt)),
+    shadowSummaryLine("legacy left", legacy.left),
+    shadowSummaryLine("legacy right", legacy.right),
+    shadowSummaryLine("shadow left", shadow.left),
+    shadowSummaryLine("shadow right", shadow.right),
+    shadowDiagLine("mismatch", mismatchLabel),
+    shadowDiagLine("reasons", reasons),
+    shadowDiagLine("error", SHADOW_STATE.error || "-")
+  ].join("\n");
 }
 
 function scheduleDailyUpdate() {
@@ -2019,6 +2332,7 @@ async function updatePlaylists(reason="") {
 
     const leftCached = loadPlaylistCache("LEFT", []);
     const rightCached = loadPlaylistCache("RIGHT", []);
+    SHADOW_STATE.legacySummary = summarizeRuntimeLists(leftCached, rightCached);
 
     if (leftCached.length) {
       leftPlayer.setList(leftCached);
@@ -2050,6 +2364,8 @@ async function updatePlaylists(reason="") {
 
     const leftList = normalizeList(leftJson, leftUrl);
     const rightList = normalizeList(rightJson, rightUrl);
+    const legacySummary = summarizeRuntimeLists(leftList, rightList);
+    SHADOW_STATE.legacySummary = legacySummary;
 
     if (!leftList.length || !rightList.length) {
       throw new Error("playlist empty");
@@ -2089,6 +2405,7 @@ async function updatePlaylists(reason="") {
       const note = changed ? "bundle switched" : (missingUrls.length ? `bundle repaired ${missingUrls.length}` : "bundle restored");
       localStorage.setItem("lv_last_update", `${when} (${reason || note})`);
       updateDiag();
+      runShadowCompare(legacySummary, reason || note).catch(() => {});
       return;
     }
 
@@ -2101,12 +2418,14 @@ async function updatePlaylists(reason="") {
     const note = missingUrls.length ? `bundle repaired ${missingUrls.length}` : "no change";
     localStorage.setItem("lv_last_update", `${when} (${note})`);
     updateDiag();
+    runShadowCompare(legacySummary, reason || note).catch(() => {});
   } catch (e) {
     console.warn("updatePlaylists failed:", e);
     errorCount += 1;
 
     const leftCached = loadPlaylistCache("LEFT", []);
     const rightCached = loadPlaylistCache("RIGHT", []);
+    SHADOW_STATE.legacySummary = summarizeRuntimeLists(leftCached, rightCached);
 
     if (leftCached.length) {
       leftPlayer.setList(leftCached);
