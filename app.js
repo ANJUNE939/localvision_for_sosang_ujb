@@ -1256,7 +1256,11 @@ function shadowItemDuration(item = {}) {
     const n = Number(value);
     if (Number.isFinite(n) && n > 0) return n;
   }
-  return Number(CONFIG?.imageDurationSecDefault) || 10;
+  // Shadow compare should mirror legacy playlist semantics, not runtime display defaults.
+  // If a playlist item omits duration entirely, legacy normalizeList() keeps it as null,
+  // and the compare summary counts that as 0s. This is especially important for RIGHT
+  // shared video items that intentionally have no duration value in playlist.json.
+  return 0;
 }
 
 function shadowItemLink(item = {}) {
