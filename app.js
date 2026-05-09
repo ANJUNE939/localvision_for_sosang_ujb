@@ -732,9 +732,13 @@ let SHADOW_STATE = {
   mode: "",
   store: "",
   configStore: "",
+  source: "",
+  sourcePath: "",
   configUrl: "",
+  timeoutMs: 0,
   loading: false,
   fetchOk: null,
+  envelope: "",
   error: "",
   fetchedAt: 0,
   comparedAt: 0,
@@ -1048,7 +1052,8 @@ async function loadConfig() {
   const mode = String(params.get("mode") || "").trim();
   const shadowMode = mode === "pilot-config-shadow";
   const shadowConfigStore = safeSlug(params.get("configStore") || params.get("configStoreSlug"), store);
-  const shadowConfigUrl = shadowMode ? buildShadowConfigUrl(params, store) : "";
+  const shadowConfigMeta = shadowMode ? buildShadowConfigRequest(params, store) : { url: "", source: "", path: "", timeoutMs: 0 };
+  const shadowConfigUrl = shadowConfigMeta.url;
 
   // 1) (최우선) left= 로 전체 playlist URL을 직접 줄 수 있음
   let leftPlaylistUrl = params.get("left") || "";
@@ -1164,15 +1169,22 @@ async function loadConfig() {
     shadowMode,
     shadowModeName: mode,
     shadowConfigStore,
-    shadowConfigUrl
+    shadowConfigUrl,
+    shadowSource: shadowConfigMeta.source,
+    shadowSourcePath: shadowConfigMeta.path,
+    shadowTimeoutMs: shadowConfigMeta.timeoutMs
   };
 
   SHADOW_STATE.enabled = shadowMode;
   SHADOW_STATE.mode = mode;
   SHADOW_STATE.store = store;
   SHADOW_STATE.configStore = shadowConfigStore;
+  SHADOW_STATE.source = shadowConfigMeta.source;
+  SHADOW_STATE.sourcePath = shadowConfigMeta.path;
   SHADOW_STATE.configUrl = shadowConfigUrl;
+  SHADOW_STATE.timeoutMs = shadowConfigMeta.timeoutMs;
   SHADOW_STATE.fetchOk = shadowMode ? null : SHADOW_STATE.fetchOk;
+  SHADOW_STATE.envelope = "";
   SHADOW_STATE.error = shadowMode && !shadowConfigUrl ? "shadow config URL missing" : "";
   SHADOW_STATE.legacySummary = null;
   SHADOW_STATE.shadowSummary = null;
@@ -1186,10 +1198,27 @@ async function loadConfig() {
   return config;
 }
 
-async function safeFetchJson(url) {
-  const res = await fetch(url, { cache:"no-store" });
+async function safeFetchJson(url, timeoutMs = 0) {
+  const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timer = ctrl && timeoutMs > 0 ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
+  let res;
+  try {
+    res = await fetch(url, { cache:"no-store", signal: ctrl?.signal });
+  } catch (err) {
+    if (timer) clearTimeout(timer);
+    if (ctrl?.signal?.aborted) throw new Error(`timeout after ${timeoutMs}ms`);
+    throw err;
+  }
+  if (timer) clearTimeout(timer);
   if (!res.ok) throw new Error(`fetch failed ${res.status}`);
   return await res.json();
+}
+
+function unwrapShadowConfigPayload(payload) {
+  if (payload && typeof payload === "object" && payload.data && typeof payload.data === "object") {
+    return { config: payload.data, envelope: "apiSuccess" };
+  }
+  return { config: payload, envelope: "raw" };
 }
 
 function appendNoStore(url="") {
@@ -1323,14 +1352,37 @@ function compareShadowSummaries(legacySummary, shadowSummary) {
   };
 }
 
-function buildShadowConfigUrl(params, store) {
+function buildShadowConfigRequest(params, store) {
   const directUrl = params.get("configUrl") || params.get("playerConfigUrl") || "";
-  if (directUrl) return directUrl;
+  const timeoutMs = Math.max(0, numParam(params, "configTimeoutMs", 4000));
+  if (directUrl) {
+    return {
+      url: directUrl,
+      source: "snapshot",
+      path: "direct-url",
+      timeoutMs,
+    };
+  }
 
   const configStore = safeSlug(params.get("configStore") || params.get("configStoreSlug"), store);
   const configBase = params.get("configBase") || "";
-  if (!configBase) return "";
-  return `${cleanBase(configBase)}/api/player-config/${encodeURIComponent(configStore)}`;
+  if (!configBase) {
+    return {
+      url: "",
+      source: "",
+      path: "",
+      timeoutMs,
+    };
+  }
+
+  const rawPath = (params.get("configPath") || "/api/public-player-config").trim() || "/api/public-player-config";
+  const normalizedPath = rawPath.startsWith("/") ? rawPath : `/${rawPath}`;
+  return {
+    url: `${cleanBase(configBase)}${normalizedPath}/${encodeURIComponent(configStore)}`,
+    source: "public-cms",
+    path: normalizedPath,
+    timeoutMs,
+  };
 }
 
 function scheduleShadowBootstrapFetch() {
@@ -1349,8 +1401,10 @@ async function fetchShadowConfigSnapshot(reason = "manual") {
   try { updateDiag(); } catch {}
 
   try {
-    const data = await safeFetchJson(appendNoStore(SHADOW_STATE.configUrl));
+    const payload = await safeFetchJson(appendNoStore(SHADOW_STATE.configUrl), SHADOW_STATE.timeoutMs || 0);
+    const { config: data, envelope } = unwrapShadowConfigPayload(payload);
     SHADOW_STATE.fetchOk = true;
+    SHADOW_STATE.envelope = envelope;
     SHADOW_STATE.error = "";
     SHADOW_STATE.fetchedAt = Date.now();
     SHADOW_STATE.shadowSummary = buildShadowSummaryFromConfig(data);
@@ -1358,6 +1412,7 @@ async function fetchShadowConfigSnapshot(reason = "manual") {
     return data;
   } catch (e) {
     SHADOW_STATE.fetchOk = false;
+    SHADOW_STATE.envelope = "";
     SHADOW_STATE.error = `${reason}: ${String(e?.message || e)}`;
     return null;
   } finally {
@@ -2112,8 +2167,12 @@ function updateDiag() {
     "Shadow Compare",
     shadowDiagLine("mode", SHADOW_STATE.mode || "pilot-config-shadow"),
     shadowDiagLine("configStore", SHADOW_STATE.configStore || SHADOW_STATE.store),
+    shadowDiagLine("source", SHADOW_STATE.source || "unknown"),
+    shadowDiagLine("sourcePath", SHADOW_STATE.sourcePath || "-"),
     shadowDiagLine("configUrl", SHADOW_STATE.configUrl || "missing"),
+    shadowDiagLine("timeoutMs", SHADOW_STATE.timeoutMs || 0),
     shadowDiagLine("fetch", fetchLabel),
+    shadowDiagLine("envelope", SHADOW_STATE.envelope || "-"),
     shadowDiagLine("fetchedAt", fmtShadowTs(SHADOW_STATE.fetchedAt)),
     shadowDiagLine("comparedAt", fmtShadowTs(SHADOW_STATE.comparedAt)),
     shadowSummaryLine("legacy left", legacy.left),
