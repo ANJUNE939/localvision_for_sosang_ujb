@@ -2097,6 +2097,12 @@ function shadowSummaryLine(prefix, zone = {}) {
   return `${prefix} rev:${rev} count:${zone?.itemCount ?? 0} dur:${zone?.totalDurationSec ?? 0}s`;
 }
 
+function getShadowCompareForDiag() {
+  if (SHADOW_STATE.compareResult) return SHADOW_STATE.compareResult;
+  if (!SHADOW_STATE.legacySummary || !SHADOW_STATE.shadowSummary) return null;
+  return compareShadowSummaries(SHADOW_STATE.legacySummary, SHADOW_STATE.shadowSummary);
+}
+
 function updateDiag() {
   // 온라인/오프라인 표시
   const onlineText = NET_STATE.online ? "ONLINE ✅" : "OFFLINE ❌";
@@ -2153,7 +2159,7 @@ function updateDiag() {
 
   const legacy = SHADOW_STATE.legacySummary || {};
   const shadow = SHADOW_STATE.shadowSummary || {};
-  const compare = SHADOW_STATE.compareResult || null;
+  const compare = getShadowCompareForDiag();
   const mismatchLabel = compare ? (compare.ok ? "NO" : "YES") : "-";
   const reasons = compare?.mismatchReasons?.length ? compare.mismatchReasons.join(", ") : "-";
   const fetchLabel =
