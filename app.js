@@ -730,6 +730,7 @@ let LAST_SIG = { LEFT: "", RIGHT: "" };
 let SHADOW_STATE = {
   enabled: false,
   mode: "",
+  playbackMode: "legacy",
   store: "",
   configStore: "",
   source: "",
@@ -1050,7 +1051,8 @@ async function loadConfig() {
 
   const store = safeSlug(params.get("store"), DEFAULT_STORE);
   const mode = String(params.get("mode") || "").trim();
-  const shadowMode = mode === "pilot-config-shadow";
+  const shadowMode = mode === "pilot-config-shadow" || mode === "pilot-config-left-live";
+  const leftLiveMode = mode === "pilot-config-left-live";
   const shadowConfigStore = safeSlug(params.get("configStore") || params.get("configStoreSlug"), store);
   const shadowConfigMeta = shadowMode ? buildShadowConfigRequest(params, store) : { url: "", source: "", path: "", timeoutMs: 0 };
   const shadowConfigUrl = shadowConfigMeta.url;
@@ -1168,6 +1170,7 @@ async function loadConfig() {
   ,
     shadowMode,
     shadowModeName: mode,
+    leftLiveMode,
     shadowConfigStore,
     shadowConfigUrl,
     shadowSource: shadowConfigMeta.source,
@@ -1177,6 +1180,7 @@ async function loadConfig() {
 
   SHADOW_STATE.enabled = shadowMode;
   SHADOW_STATE.mode = mode;
+  SHADOW_STATE.playbackMode = leftLiveMode ? "public-left+legacy-right" : "legacy";
   SHADOW_STATE.store = store;
   SHADOW_STATE.configStore = shadowConfigStore;
   SHADOW_STATE.source = shadowConfigMeta.source;
@@ -1327,6 +1331,12 @@ function buildShadowSummaryFromConfig(config) {
       signature: listSignature(rightList),
     }
   };
+}
+
+function buildLeftLiveListFromConfig(config) {
+  const applied = config?.playlists?.applied || {};
+  const leftZone = applied?.left || {};
+  return mapShadowItemsToLegacy(leftZone?.items || []);
 }
 
 function compareShadowSummaries(legacySummary, shadowSummary) {
@@ -2172,6 +2182,7 @@ function updateDiag() {
   shadowNode.textContent = [
     "Shadow Compare",
     shadowDiagLine("mode", SHADOW_STATE.mode || "pilot-config-shadow"),
+    shadowDiagLine("playbackMode", SHADOW_STATE.playbackMode || "legacy"),
     shadowDiagLine("configStore", SHADOW_STATE.configStore || SHADOW_STATE.store),
     shadowDiagLine("source", SHADOW_STATE.source || "unknown"),
     shadowDiagLine("sourcePath", SHADOW_STATE.sourcePath || "-"),
@@ -2431,8 +2442,22 @@ async function updatePlaylists(reason="") {
       safeFetchJson(rightUrl)
     ]);
 
-    const leftList = normalizeList(leftJson, leftUrl);
+    const legacyLeftList = normalizeList(leftJson, leftUrl);
     const rightList = normalizeList(rightJson, rightUrl);
+    let leftList = legacyLeftList;
+
+    if (CONFIG.leftLiveMode && SHADOW_STATE.configUrl) {
+      const liveConfig = await fetchShadowConfigSnapshot("left-live");
+      if (liveConfig) {
+        const liveLeftList = buildLeftLiveListFromConfig(liveConfig);
+        if (liveLeftList.length) {
+          leftList = liveLeftList;
+        } else {
+          SHADOW_STATE.error = "left-live: applied left empty, fallback to legacy left";
+        }
+      }
+    }
+
     const legacySummary = summarizeRuntimeLists(leftList, rightList);
     SHADOW_STATE.legacySummary = legacySummary;
 
