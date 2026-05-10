@@ -738,11 +738,13 @@ let SHADOW_STATE = {
   configUrl: "",
   timeoutMs: 0,
   loading: false,
+  loadingPromise: null,
   fetchOk: null,
   envelope: "",
   error: "",
   fetchedAt: 0,
   comparedAt: 0,
+  configData: null,
   legacySummary: null,
   shadowSummary: null,
   compareResult: null
@@ -1188,8 +1190,10 @@ async function loadConfig() {
   SHADOW_STATE.configUrl = shadowConfigUrl;
   SHADOW_STATE.timeoutMs = shadowConfigMeta.timeoutMs;
   SHADOW_STATE.fetchOk = shadowMode ? null : SHADOW_STATE.fetchOk;
+  SHADOW_STATE.loadingPromise = null;
   SHADOW_STATE.envelope = "";
   SHADOW_STATE.error = shadowMode && !shadowConfigUrl ? "shadow config URL missing" : "";
+  SHADOW_STATE.configData = null;
   SHADOW_STATE.legacySummary = null;
   SHADOW_STATE.shadowSummary = null;
   SHADOW_STATE.compareResult = null;
@@ -1404,34 +1408,47 @@ function scheduleShadowBootstrapFetch() {
 
 async function fetchShadowConfigSnapshot(reason = "manual") {
   if (!SHADOW_STATE.enabled || !SHADOW_STATE.configUrl) return null;
-  if (SHADOW_STATE.loading) return null;
+  if (SHADOW_STATE.loadingPromise) {
+    try {
+      return await SHADOW_STATE.loadingPromise;
+    } catch {
+      return null;
+    }
+  }
 
   SHADOW_STATE.loading = true;
   SHADOW_STATE.error = "";
   try { updateDiag(); } catch {}
 
-  try {
-    const payload = await safeFetchJson(appendNoStore(SHADOW_STATE.configUrl), SHADOW_STATE.timeoutMs || 0);
-    const { config: data, envelope } = unwrapShadowConfigPayload(payload);
-    SHADOW_STATE.fetchOk = true;
-    SHADOW_STATE.envelope = envelope;
-    SHADOW_STATE.error = "";
-    SHADOW_STATE.fetchedAt = Date.now();
-    SHADOW_STATE.shadowSummary = buildShadowSummaryFromConfig(data);
-    SHADOW_STATE.compareResult = SHADOW_STATE.compareResult || null;
-    return data;
-  } catch (e) {
-    SHADOW_STATE.fetchOk = false;
-    SHADOW_STATE.envelope = "";
-    SHADOW_STATE.error = `${reason}: ${String(e?.message || e)}`;
-    return null;
-  } finally {
-    SHADOW_STATE.loading = false;
+  const task = (async () => {
     try {
-      window.__lvShadowState = SHADOW_STATE;
-      updateDiag();
-    } catch {}
-  }
+      const payload = await safeFetchJson(appendNoStore(SHADOW_STATE.configUrl), SHADOW_STATE.timeoutMs || 0);
+      const { config: data, envelope } = unwrapShadowConfigPayload(payload);
+      SHADOW_STATE.fetchOk = true;
+      SHADOW_STATE.envelope = envelope;
+      SHADOW_STATE.error = "";
+      SHADOW_STATE.fetchedAt = Date.now();
+      SHADOW_STATE.configData = data;
+      SHADOW_STATE.shadowSummary = buildShadowSummaryFromConfig(data);
+      SHADOW_STATE.compareResult = SHADOW_STATE.compareResult || null;
+      return data;
+    } catch (e) {
+      SHADOW_STATE.fetchOk = false;
+      SHADOW_STATE.envelope = "";
+      SHADOW_STATE.error = `${reason}: ${String(e?.message || e)}`;
+      return null;
+    } finally {
+      SHADOW_STATE.loading = false;
+      SHADOW_STATE.loadingPromise = null;
+      try {
+        window.__lvShadowState = SHADOW_STATE;
+        updateDiag();
+      } catch {}
+    }
+  })();
+
+  SHADOW_STATE.loadingPromise = task;
+  return await task;
 }
 
 async function runShadowCompare(legacySummary, reason = "compare") {
