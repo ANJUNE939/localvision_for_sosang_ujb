@@ -1106,6 +1106,9 @@ async function loadConfig() {
 
     dailyUpdateTime: params.get("update") || "09:10",
     playlistRefreshFallbackMs: numParam(params, "refresh", 3600000),
+    // pilot-config-left-live에서는 CMS left 변경을 더 빨리 따라가기 위해 짧은 poll 허용
+    // 기본 30초, 0이면 비활성
+    leftLivePollMs: Math.max(0, numParam(params, "leftLivePollMs", 30000)),
 
     // (운영용) 매일 새벽 자동 재시작/새로고침
     // - restart=HH:MM (기본 09:00)
@@ -2832,6 +2835,11 @@ try {
 
   // fallback 업데이트
   setInterval(() => updatePlaylists("fallback"), CONFIG.playlistRefreshFallbackMs || 3600000);
+
+  // left-only live 파일럿은 CMS applied left를 더 짧게 따라가도록 별도 poll 사용
+  if (CONFIG.leftLiveMode && (CONFIG.leftLivePollMs || 0) > 0) {
+    setInterval(() => updatePlaylists("left-live-poll"), CONFIG.leftLivePollMs);
+  }
 
   // 온라인 상태 주기 체크(진짜 연결 여부)
   setInterval(() => probeOnline(2000), CONFIG.probeIntervalMs || 30000);
