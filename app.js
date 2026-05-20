@@ -727,6 +727,30 @@ async function fetchTvStatusForAdmin() {
 
 let PENDING_SYNC = false; // 오프라인이면 "다음 동기화 대기"
 let LAST_SIG = { LEFT: "", RIGHT: "" };
+let SHADOW_STATE = {
+  enabled: false,
+  mode: "",
+  playbackMode: "legacy",
+  store: "",
+  configStore: "",
+  source: "",
+  sourcePath: "",
+  configUrl: "",
+  timeoutMs: 0,
+  loading: false,
+  loadingPromise: null,
+  fetchOk: null,
+  envelope: "",
+  error: "",
+  fetchedAt: 0,
+  comparedAt: 0,
+  configData: null,
+  legacySummary: null,
+  shadowSummary: null,
+  compareResult: null
+};
+
+try { window.__lvShadowState = SHADOW_STATE; } catch {}
 
 // media cache 메타(LRU 비슷하게 ts/우선순위 관리)
 const MEDIA_META_KEY = "lv_media_meta_v1";
@@ -1028,13 +1052,19 @@ async function loadConfig() {
   const params = new URLSearchParams(location.search);
 
   const store = safeSlug(params.get("store"), DEFAULT_STORE);
+  const mode = String(params.get("mode") || "").trim();
+  const shadowMode = mode === "pilot-config-shadow" || mode === "pilot-config-left-live";
+  const leftLiveMode = mode === "pilot-config-left-live";
+  const shadowConfigStore = safeSlug(params.get("configStore") || params.get("configStoreSlug"), store);
+  const shadowConfigMeta = shadowMode ? buildShadowConfigRequest(params, store) : { url: "", source: "", path: "", timeoutMs: 0 };
+  const shadowConfigUrl = shadowConfigMeta.url;
 
   // 1) (최우선) left= 로 전체 playlist URL을 직접 줄 수 있음
   let leftPlaylistUrl = params.get("left") || "";
 
   // 2) leftBase= 로 버킷 도메인만 주면 /left/playlist.json 자동 생성
   if (!leftPlaylistUrl) {
-    const leftBase = params.get("leftBase") || STORE_LEFT_BASE[store] || "";
+    const leftBase = params.get("leftBase") || params.get("leftbase") || STORE_LEFT_BASE[store] || "";
     if (leftBase) leftPlaylistUrl = `${cleanBase(leftBase)}/left/playlist.json`;
   }
 
@@ -1043,7 +1073,7 @@ async function loadConfig() {
 
   // 4) rightBase= 로 도메인만 주면 /right/playlist.json 자동 생성 (기본은 gongtong)
   if (!rightPlaylistUrl) {
-    const rightBase = params.get("rightBase") || DEFAULT_RIGHT_BASE;
+    const rightBase = params.get("rightBase") || params.get("rightbase") || DEFAULT_RIGHT_BASE;
     if (rightBase) rightPlaylistUrl = `${cleanBase(rightBase)}/right/playlist.json`;
   }
 
@@ -1063,7 +1093,7 @@ async function loadConfig() {
     );
   }
 
-  return {
+  const config = {
     deviceId: `AUTO-${store}`,
     store,
 
@@ -1076,6 +1106,9 @@ async function loadConfig() {
 
     dailyUpdateTime: params.get("update") || "09:10",
     playlistRefreshFallbackMs: numParam(params, "refresh", 3600000),
+    // pilot-config-left-live에서는 CMS left 변경을 더 빨리 따라가기 위해 짧은 poll 허용
+    // 기본 30초, 0이면 비활성
+    leftLivePollMs: Math.max(0, numParam(params, "leftLivePollMs", 30000)),
 
     // (운영용) 매일 새벽 자동 재시작/새로고침
     // - restart=HH:MM (기본 09:00)
@@ -1139,13 +1172,310 @@ async function loadConfig() {
 
     // version 업데이트는 기본적으로 취침 시간 우선
     versionReloadWindow: params.get("verReloadWindow") || "sleep-first"
-};
+  ,
+    shadowMode,
+    shadowModeName: mode,
+    leftLiveMode,
+    shadowConfigStore,
+    shadowConfigUrl,
+    shadowSource: shadowConfigMeta.source,
+    shadowSourcePath: shadowConfigMeta.path,
+    shadowTimeoutMs: shadowConfigMeta.timeoutMs
+  };
+
+  SHADOW_STATE.enabled = shadowMode;
+  SHADOW_STATE.mode = mode;
+  SHADOW_STATE.playbackMode = leftLiveMode ? "public-left+legacy-right" : "legacy";
+  SHADOW_STATE.store = store;
+  SHADOW_STATE.configStore = shadowConfigStore;
+  SHADOW_STATE.source = shadowConfigMeta.source;
+  SHADOW_STATE.sourcePath = shadowConfigMeta.path;
+  SHADOW_STATE.configUrl = shadowConfigUrl;
+  SHADOW_STATE.timeoutMs = shadowConfigMeta.timeoutMs;
+  SHADOW_STATE.fetchOk = shadowMode ? null : SHADOW_STATE.fetchOk;
+  SHADOW_STATE.loadingPromise = null;
+  SHADOW_STATE.envelope = "";
+  SHADOW_STATE.error = shadowMode && !shadowConfigUrl ? "shadow config URL missing" : "";
+  SHADOW_STATE.configData = null;
+  SHADOW_STATE.legacySummary = null;
+  SHADOW_STATE.shadowSummary = null;
+  SHADOW_STATE.compareResult = null;
+  SHADOW_STATE.fetchedAt = 0;
+  SHADOW_STATE.comparedAt = 0;
+  try { window.__lvShadowState = SHADOW_STATE; } catch {}
+
+  if (shadowMode && shadowConfigUrl) scheduleShadowBootstrapFetch();
+
+  return config;
 }
 
-async function safeFetchJson(url) {
-  const res = await fetch(url, { cache:"no-store" });
+async function safeFetchJson(url, timeoutMs = 0) {
+  const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timer = ctrl && timeoutMs > 0 ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
+  let res;
+  try {
+    res = await fetch(url, { cache:"no-store", signal: ctrl?.signal });
+  } catch (err) {
+    if (timer) clearTimeout(timer);
+    if (ctrl?.signal?.aborted) throw new Error(`timeout after ${timeoutMs}ms`);
+    throw err;
+  }
+  if (timer) clearTimeout(timer);
   if (!res.ok) throw new Error(`fetch failed ${res.status}`);
   return await res.json();
+}
+
+function unwrapShadowConfigPayload(payload) {
+  if (payload && typeof payload === "object" && payload.data && typeof payload.data === "object") {
+    return { config: payload.data, envelope: "apiSuccess" };
+  }
+  return { config: payload, envelope: "raw" };
+}
+
+function appendNoStore(url="") {
+  if (!url) return "";
+  try {
+    const u = new URL(url, location.href);
+    u.searchParams.set("_lvShadowTs", String(Date.now()));
+    return u.toString();
+  } catch {
+    const sep = String(url).includes("?") ? "&" : "?";
+    return `${url}${sep}_lvShadowTs=${Date.now()}`;
+  }
+}
+
+function sumDurations(list = []) {
+  return (Array.isArray(list) ? list : []).reduce((sum, item) => {
+    const n = Number(item?.duration) || 0;
+    return sum + (Number.isFinite(n) ? n : 0);
+  }, 0);
+}
+
+function summarizeRuntimeLists(leftList = [], rightList = []) {
+  return {
+    left: {
+      revision: null,
+      itemCount: leftList.length,
+      totalDurationSec: sumDurations(leftList),
+      signature: listSignature(leftList),
+    },
+    right: {
+      revision: null,
+      itemCount: rightList.length,
+      totalDurationSec: sumDurations(rightList),
+      signature: listSignature(rightList),
+    }
+  };
+}
+
+function shadowItemUrl(item = {}) {
+  const content = item?.content || {};
+  const raw =
+    item?.url ||
+    item?.mediaUrl ||
+    item?.media_url ||
+    content?.publicUrl ||
+    content?.public_url ||
+    content?.url ||
+    "";
+  return String(raw || "").trim();
+}
+
+function shadowItemDuration(item = {}) {
+  const content = item?.content || {};
+  const candidates = [
+    item?.durationSecOverride,
+    item?.duration_sec_override,
+    item?.durationSec,
+    item?.duration_sec,
+    content?.durationSec,
+    content?.duration_sec,
+    content?.duration
+  ];
+  for (const value of candidates) {
+    const n = Number(value);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  // Shadow compare should mirror legacy playlist semantics, not runtime display defaults.
+  // If a playlist item omits duration entirely, legacy normalizeList() keeps it as null,
+  // and the compare summary counts that as 0s. This is especially important for RIGHT
+  // shared video items that intentionally have no duration value in playlist.json.
+  return 0;
+}
+
+function shadowItemLink(item = {}) {
+  return String(item?.link || item?.linkUrl || item?.link_url || item?.content?.linkUrl || "").trim();
+}
+
+function mapShadowItemsToLegacy(items = []) {
+  return (Array.isArray(items) ? items : [])
+    .map((item) => ({
+      url: resolveUrl(shadowItemUrl(item)),
+      link: shadowItemLink(item),
+      duration: shadowItemDuration(item)
+    }))
+    .filter((item) => item.url && (isVideo(item.url) || isImage(item.url)));
+}
+
+function buildShadowSummaryFromConfig(config) {
+  const applied = config?.playlists?.applied || {};
+  const leftZone = applied?.left || {};
+  const rightZone = applied?.right || {};
+  const leftList = mapShadowItemsToLegacy(leftZone?.items || []);
+  const rightList = mapShadowItemsToLegacy(rightZone?.items || []);
+
+  return {
+    left: {
+      revision: leftZone?.revision ?? null,
+      itemCount: leftList.length,
+      totalDurationSec: sumDurations(leftList),
+      signature: listSignature(leftList),
+    },
+    right: {
+      revision: rightZone?.revision ?? null,
+      itemCount: rightList.length,
+      totalDurationSec: sumDurations(rightList),
+      signature: listSignature(rightList),
+    }
+  };
+}
+
+function buildLeftLiveListFromConfig(config) {
+  const applied = config?.playlists?.applied || {};
+  const leftZone = applied?.left || {};
+  return mapShadowItemsToLegacy(leftZone?.items || []);
+}
+
+function compareShadowSummaries(legacySummary, shadowSummary) {
+  const reasons = [];
+  const zoneResult = (legacyZone, shadowZone, zoneName) => {
+    const itemCountMatch = legacyZone?.itemCount === shadowZone?.itemCount;
+    const durationMatch = legacyZone?.totalDurationSec === shadowZone?.totalDurationSec;
+    const signatureMatch = legacyZone?.signature === shadowZone?.signature;
+    if (!itemCountMatch) reasons.push(`${zoneName} itemCount`);
+    if (!durationMatch) reasons.push(`${zoneName} duration`);
+    if (!signatureMatch) reasons.push(`${zoneName} signature`);
+    return { itemCountMatch, durationMatch, signatureMatch };
+  };
+
+  const left = zoneResult(legacySummary?.left || {}, shadowSummary?.left || {}, "left");
+  const right = zoneResult(legacySummary?.right || {}, shadowSummary?.right || {}, "right");
+
+  return {
+    ok: reasons.length === 0,
+    left,
+    right,
+    mismatchReasons: reasons
+  };
+}
+
+function buildShadowConfigRequest(params, store) {
+  const directUrl = params.get("configUrl") || params.get("playerConfigUrl") || "";
+  const timeoutMs = Math.max(0, numParam(params, "configTimeoutMs", 4000));
+  if (directUrl) {
+    return {
+      url: directUrl,
+      source: "snapshot",
+      path: "direct-url",
+      timeoutMs,
+    };
+  }
+
+  const configStore = safeSlug(params.get("configStore") || params.get("configStoreSlug"), store);
+  const configBase = params.get("configBase") || "";
+  if (!configBase) {
+    return {
+      url: "",
+      source: "",
+      path: "",
+      timeoutMs,
+    };
+  }
+
+  const rawPath = (params.get("configPath") || "/api/public-player-config").trim() || "/api/public-player-config";
+  const normalizedPath = rawPath.startsWith("/") ? rawPath : `/${rawPath}`;
+  return {
+    url: `${cleanBase(configBase)}${normalizedPath}/${encodeURIComponent(configStore)}`,
+    source: "public-cms",
+    path: normalizedPath,
+    timeoutMs,
+  };
+}
+
+function scheduleShadowBootstrapFetch() {
+  if (!SHADOW_STATE.enabled || !SHADOW_STATE.configUrl) return;
+  setTimeout(() => {
+    fetchShadowConfigSnapshot("bootstrap").catch(() => {});
+  }, 0);
+}
+
+async function fetchShadowConfigSnapshot(reason = "manual") {
+  if (!SHADOW_STATE.enabled || !SHADOW_STATE.configUrl) return null;
+  if (SHADOW_STATE.loadingPromise) {
+    try {
+      return await SHADOW_STATE.loadingPromise;
+    } catch {
+      return null;
+    }
+  }
+
+  SHADOW_STATE.loading = true;
+  SHADOW_STATE.error = "";
+  try { updateDiag(); } catch {}
+
+  const task = (async () => {
+    try {
+      const payload = await safeFetchJson(appendNoStore(SHADOW_STATE.configUrl), SHADOW_STATE.timeoutMs || 0);
+      const { config: data, envelope } = unwrapShadowConfigPayload(payload);
+      SHADOW_STATE.fetchOk = true;
+      SHADOW_STATE.envelope = envelope;
+      SHADOW_STATE.error = "";
+      SHADOW_STATE.fetchedAt = Date.now();
+      SHADOW_STATE.configData = data;
+      SHADOW_STATE.shadowSummary = buildShadowSummaryFromConfig(data);
+      SHADOW_STATE.compareResult = SHADOW_STATE.compareResult || null;
+      return data;
+    } catch (e) {
+      SHADOW_STATE.fetchOk = false;
+      SHADOW_STATE.envelope = "";
+      SHADOW_STATE.error = `${reason}: ${String(e?.message || e)}`;
+      return null;
+    } finally {
+      SHADOW_STATE.loading = false;
+      SHADOW_STATE.loadingPromise = null;
+      try {
+        window.__lvShadowState = SHADOW_STATE;
+        updateDiag();
+      } catch {}
+    }
+  })();
+
+  SHADOW_STATE.loadingPromise = task;
+  return await task;
+}
+
+async function runShadowCompare(legacySummary, reason = "compare") {
+  if (!SHADOW_STATE.enabled) return;
+  SHADOW_STATE.legacySummary = legacySummary || null;
+  const config = await fetchShadowConfigSnapshot(reason);
+  SHADOW_STATE.comparedAt = Date.now();
+
+  if (!config) {
+    SHADOW_STATE.compareResult = null;
+    try {
+      window.__lvShadowState = SHADOW_STATE;
+      updateDiag();
+    } catch {}
+    return;
+  }
+
+  const shadowSummary = SHADOW_STATE.shadowSummary || buildShadowSummaryFromConfig(config);
+  SHADOW_STATE.shadowSummary = shadowSummary;
+  SHADOW_STATE.compareResult = compareShadowSummaries(legacySummary || summarizeRuntimeLists([], []), shadowSummary);
+  try {
+    window.__lvShadowState = SHADOW_STATE;
+    updateDiag();
+  } catch {}
 }
 
 function savePlaylistCache(key, data) {
@@ -1760,6 +2090,48 @@ class SimplePlayer {
 const leftPlayer = new SimplePlayer("LEFT", els.left);
 const rightPlayer = new SimplePlayer("RIGHT", els.right);
 
+function ensureShadowDiagNode() {
+  if (!els.diag) return null;
+  let node = document.getElementById("shadowDiag");
+  if (node) return node;
+
+  node = document.createElement("pre");
+  node.id = "shadowDiag";
+  node.style.marginTop = "10px";
+  node.style.padding = "10px 12px";
+  node.style.borderRadius = "10px";
+  node.style.background = "rgba(255,255,255,0.04)";
+  node.style.border = "1px solid rgba(255,255,255,0.08)";
+  node.style.whiteSpace = "pre-wrap";
+  node.style.wordBreak = "break-word";
+  node.style.fontSize = "12px";
+  node.style.lineHeight = "1.45";
+  node.style.color = "#d9f99d";
+  node.style.display = "none";
+  els.diag.appendChild(node);
+  return node;
+}
+
+function shadowDiagLine(label, value) {
+  return `${label}: ${value == null || value === "" ? "-" : value}`;
+}
+
+function fmtShadowTs(ts) {
+  if (!ts) return "-";
+  try { return `${fmtKorea(ts)} (${fmtAgo(Date.now() - ts)})`; }
+  catch { return new Date(ts).toLocaleString(); }
+}
+
+function shadowSummaryLine(prefix, zone = {}) {
+  const rev = zone?.revision == null ? "-" : zone.revision;
+  return `${prefix} rev:${rev} count:${zone?.itemCount ?? 0} dur:${zone?.totalDurationSec ?? 0}s`;
+}
+
+function getShadowCompareForDiag() {
+  if (SHADOW_STATE.compareResult) return SHADOW_STATE.compareResult;
+  if (!SHADOW_STATE.legacySummary || !SHADOW_STATE.shadowSummary) return null;
+  return compareShadowSummaries(SHADOW_STATE.legacySummary, SHADOW_STATE.shadowSummary);
+}
 
 function updateDiag() {
   // 온라인/오프라인 표시
@@ -1807,6 +2179,47 @@ function updateDiag() {
   if (els.dRight) els.dRight.textContent = rightPlayer?.currentUrl || "-";
 
   if (els.dErr) els.dErr.textContent = String(errorCount);
+
+  const shadowNode = ensureShadowDiagNode();
+  if (!shadowNode) return;
+  if (!SHADOW_STATE.enabled) {
+    shadowNode.style.display = "none";
+    return;
+  }
+
+  const legacy = SHADOW_STATE.legacySummary || {};
+  const shadow = SHADOW_STATE.shadowSummary || {};
+  const compare = getShadowCompareForDiag();
+  const mismatchLabel = compare ? (compare.ok ? "NO" : "YES") : "-";
+  const reasons = compare?.mismatchReasons?.length ? compare.mismatchReasons.join(", ") : "-";
+  const fetchLabel =
+    SHADOW_STATE.loading ? "loading" :
+    SHADOW_STATE.fetchOk === true ? "ok" :
+    SHADOW_STATE.fetchOk === false ? "failed" :
+    "idle";
+
+  shadowNode.style.display = "block";
+  shadowNode.textContent = [
+    "Shadow Compare",
+    shadowDiagLine("mode", SHADOW_STATE.mode || "pilot-config-shadow"),
+    shadowDiagLine("playbackMode", SHADOW_STATE.playbackMode || "legacy"),
+    shadowDiagLine("configStore", SHADOW_STATE.configStore || SHADOW_STATE.store),
+    shadowDiagLine("source", SHADOW_STATE.source || "unknown"),
+    shadowDiagLine("sourcePath", SHADOW_STATE.sourcePath || "-"),
+    shadowDiagLine("configUrl", SHADOW_STATE.configUrl || "missing"),
+    shadowDiagLine("timeoutMs", SHADOW_STATE.timeoutMs || 0),
+    shadowDiagLine("fetch", fetchLabel),
+    shadowDiagLine("envelope", SHADOW_STATE.envelope || "-"),
+    shadowDiagLine("fetchedAt", fmtShadowTs(SHADOW_STATE.fetchedAt)),
+    shadowDiagLine("comparedAt", fmtShadowTs(SHADOW_STATE.comparedAt)),
+    shadowSummaryLine("legacy left", legacy.left),
+    shadowSummaryLine("legacy right", legacy.right),
+    shadowSummaryLine("shadow left", shadow.left),
+    shadowSummaryLine("shadow right", shadow.right),
+    shadowDiagLine("mismatch", mismatchLabel),
+    shadowDiagLine("reasons", reasons),
+    shadowDiagLine("error", SHADOW_STATE.error || "-")
+  ].join("\n");
 }
 
 function scheduleDailyUpdate() {
@@ -2019,6 +2432,7 @@ async function updatePlaylists(reason="") {
 
     const leftCached = loadPlaylistCache("LEFT", []);
     const rightCached = loadPlaylistCache("RIGHT", []);
+    SHADOW_STATE.legacySummary = summarizeRuntimeLists(leftCached, rightCached);
 
     if (leftCached.length) {
       leftPlayer.setList(leftCached);
@@ -2048,8 +2462,24 @@ async function updatePlaylists(reason="") {
       safeFetchJson(rightUrl)
     ]);
 
-    const leftList = normalizeList(leftJson, leftUrl);
+    const legacyLeftList = normalizeList(leftJson, leftUrl);
     const rightList = normalizeList(rightJson, rightUrl);
+    let leftList = legacyLeftList;
+
+    if (CONFIG.leftLiveMode && SHADOW_STATE.configUrl) {
+      const liveConfig = await fetchShadowConfigSnapshot("left-live");
+      if (liveConfig) {
+        const liveLeftList = buildLeftLiveListFromConfig(liveConfig);
+        if (liveLeftList.length) {
+          leftList = liveLeftList;
+        } else {
+          SHADOW_STATE.error = "left-live: applied left empty, fallback to legacy left";
+        }
+      }
+    }
+
+    const legacySummary = summarizeRuntimeLists(leftList, rightList);
+    SHADOW_STATE.legacySummary = legacySummary;
 
     if (!leftList.length || !rightList.length) {
       throw new Error("playlist empty");
@@ -2089,6 +2519,7 @@ async function updatePlaylists(reason="") {
       const note = changed ? "bundle switched" : (missingUrls.length ? `bundle repaired ${missingUrls.length}` : "bundle restored");
       localStorage.setItem("lv_last_update", `${when} (${reason || note})`);
       updateDiag();
+      runShadowCompare(legacySummary, reason || note).catch(() => {});
       return;
     }
 
@@ -2101,12 +2532,14 @@ async function updatePlaylists(reason="") {
     const note = missingUrls.length ? `bundle repaired ${missingUrls.length}` : "no change";
     localStorage.setItem("lv_last_update", `${when} (${note})`);
     updateDiag();
+    runShadowCompare(legacySummary, reason || note).catch(() => {});
   } catch (e) {
     console.warn("updatePlaylists failed:", e);
     errorCount += 1;
 
     const leftCached = loadPlaylistCache("LEFT", []);
     const rightCached = loadPlaylistCache("RIGHT", []);
+    SHADOW_STATE.legacySummary = summarizeRuntimeLists(leftCached, rightCached);
 
     if (leftCached.length) {
       leftPlayer.setList(leftCached);
@@ -2402,6 +2835,11 @@ try {
 
   // fallback 업데이트
   setInterval(() => updatePlaylists("fallback"), CONFIG.playlistRefreshFallbackMs || 3600000);
+
+  // left-only live 파일럿은 CMS applied left를 더 짧게 따라가도록 별도 poll 사용
+  if (CONFIG.leftLiveMode && (CONFIG.leftLivePollMs || 0) > 0) {
+    setInterval(() => updatePlaylists("left-live-poll"), CONFIG.leftLivePollMs);
+  }
 
   // 온라인 상태 주기 체크(진짜 연결 여부)
   setInterval(() => probeOnline(2000), CONFIG.probeIntervalMs || 30000);
